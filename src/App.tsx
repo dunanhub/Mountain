@@ -440,6 +440,8 @@ export default function App() {
         { zoom: 12, radius: 5 },
         { zoom: 13, radius: 7 },
         { zoom: 14, radius: 9 },
+        { zoom: 15, radius: 5 },
+        { zoom: 16, radius: 3 },
       ]
 
       const urls = new Set<string>()
@@ -700,6 +702,7 @@ export default function App() {
     startCompass()
     setReturnMode(true)
     setMenuOpen(false)
+    setToolsOpen(false)
   }
 
   function calculateBearing(from: Point, to: Point) {
@@ -825,7 +828,7 @@ export default function App() {
           <TileLayer
             attribution="&copy; OpenStreetMap"
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            maxNativeZoom={14}
+            maxNativeZoom={16}
             maxZoom={18}
           />
 
@@ -956,7 +959,7 @@ export default function App() {
         </MapContainer>
 
         {returnMode && targetPoint && currentPoint && (
-          <div className="absolute left-3 right-3 top-3 z-[999] rounded-3xl bg-slate-950/95 p-4 text-white shadow-2xl backdrop-blur">
+          <div className="absolute left-3 right-3 top-3 z-[1700] rounded-3xl bg-slate-950/95 p-4 text-white shadow-2xl backdrop-blur">
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-xs font-bold text-orange-300">Назад по маршруту</p>
@@ -1217,6 +1220,7 @@ export default function App() {
       {/* Бургер-меню: история, GPX, скачать карту */}
       <div className={`fixed top-[17%] z-[1600] transition-all duration-500
         ${menuOpen ? '-right-30' : 'right-4'}
+        ${returnMode ? 'invisible opacity-0' : 'visible opacity-100'}
         `}>
         <div className="relative h-14 w-14">
           {toolsOpen && (
