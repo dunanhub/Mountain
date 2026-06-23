@@ -40,7 +40,7 @@ export default defineConfig({
             options: {
               cacheName: 'osm-map-tiles',
               expiration: {
-                maxEntries: 2500,
+                maxEntries: 7000,
                 maxAgeSeconds: 60 * 60 * 24 * 30,
               },
               cacheableResponse: {

@@ -10,6 +10,8 @@
     "deploy": "npm run build && gh-pages -d dist"
   },
   "dependencies": {
+    "@mdi/js": "^7.4.47",
+    "@mdi/react": "^1.6.1",
     "idb": "^8.0.3",
     "leaflet": "^1.9.4",
     "react": "^19.2.7",

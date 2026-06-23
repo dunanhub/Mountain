@@ -1,7 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { MapContainer, Marker, Polyline, TileLayer, useMap } from 'react-leaflet'
+import { useMapEvents, MapContainer, Marker, Polyline, TileLayer, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { openDB } from 'idb'
+import { Icon } from '@mdi/react'
+import {
+  mdiMapMarker,
+  mdiNavigationVariant,
+  mdiPlay,
+  mdiStop,
+  mdiDownload,
+  mdiFlag,
+  mdiCrosshairsGps,
+  mdiMap,
+  mdiLoading,
+  mdiHistory,
+  mdiDelete,
+} from '@mdi/js'
 
 type Point = {
   id?: number
@@ -13,10 +27,28 @@ type Point = {
   timestamp: number
 }
 
-const dbPromise = openDB('mountain-tracker-db', 1, {
+type SavedRoute = {
+  id?: number
+  name: string
+  points: Point[]
+  distance: number
+  duration: number
+  createdAt: number
+}
+
+const dbPromise = openDB('mountain-tracker-db', 2, {
   upgrade(db) {
-    db.createObjectStore('points', { keyPath: 'id', autoIncrement: true })
-    db.createObjectStore('session', { keyPath: 'key' })
+    if (!db.objectStoreNames.contains('points')) {
+      db.createObjectStore('points', { keyPath: 'id', autoIncrement: true })
+    }
+
+    if (!db.objectStoreNames.contains('session')) {
+      db.createObjectStore('session', { keyPath: 'key' })
+    }
+
+    if (!db.objectStoreNames.contains('routes')) {
+      db.createObjectStore('routes', { keyPath: 'id', autoIncrement: true })
+    }
   },
 })
 
@@ -34,14 +66,32 @@ const startIcon = new L.Icon({
   iconAnchor: [12, 41],
 })
 
-function FollowMe({ point }: { point: Point | null }) {
+function MapController({
+  point,
+  follow,
+  onMove,
+}: {
+  point: Point | null
+  follow: boolean
+  onMove: () => void
+}) {
   const map = useMap()
 
+  useMapEvents({
+    dragstart() {
+      onMove()
+    },
+
+    zoomstart() {
+      onMove()
+    },
+  })
+
   useEffect(() => {
-    if (point) {
+    if (point && follow) {
       map.setView([point.lat, point.lng], 17)
     }
-  }, [point, map])
+  }, [point, follow, map])
 
   return null
 }
@@ -84,12 +134,17 @@ export default function App() {
 
   const [points, setPoints] = useState<Point[]>([])
   const [tracking, setTracking] = useState(false)
-  const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [activeStartedAt, setActiveStartedAt] = useState<number | null>(null)
+  const [elapsedMs, setElapsedMs] = useState(0)
   const [now, setNow] = useState(Date.now())
   const [error, setError] = useState('')
   const [downloadingMap, setDownloadingMap] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState('')
+  const [routes, setRoutes] = useState<SavedRoute[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [followMe, setFollowMe] = useState(true)
+  const [showLocateButton, setShowLocateButton] = useState(false)
 
   const currentPoint = points.at(-1) ?? null
   const startPoint = points[0] ?? null
@@ -106,10 +161,15 @@ export default function App() {
   async function loadSaved() {
     const db = await dbPromise
     const savedPoints = await db.getAll('points')
-    const savedSession = await db.get('session', 'startedAt')
+    const savedElapsed = await db.get('session', 'elapsedMs')
+    const savedRoutes = await db.getAll('routes')
 
     setPoints(savedPoints)
-    if (savedSession?.value) setStartedAt(savedSession.value)
+    setRoutes(savedRoutes.reverse())
+
+    if (savedElapsed?.value) {
+      setElapsedMs(savedElapsed.value)
+    }
   }
 
   async function savePoint(point: Point) {
@@ -133,11 +193,7 @@ export default function App() {
       return
     }
 
-    const start = startedAt ?? Date.now()
-    setStartedAt(start)
-
-    const db = await dbPromise
-    await db.put('session', { key: 'startedAt', value: start })
+    setActiveStartedAt(Date.now())
 
     watchId.current = navigator.geolocation.watchPosition(
       async position => {
@@ -163,24 +219,23 @@ export default function App() {
     setTracking(true)
   }
 
-  function stopTracking() {
+  async function stopTracking() {
     if (watchId.current !== null) {
       navigator.geolocation.clearWatch(watchId.current)
       watchId.current = null
     }
 
+    if (activeStartedAt) {
+      const newElapsed = elapsedMs + (Date.now() - activeStartedAt)
+
+      setElapsedMs(newElapsed)
+      setActiveStartedAt(null)
+
+      const db = await dbPromise
+      await db.put('session', { key: 'elapsedMs', value: newElapsed })
+    }
+
     setTracking(false)
-  }
-
-  async function clearRoute() {
-    stopTracking()
-
-    const db = await dbPromise
-    await db.clear('points')
-    await db.clear('session')
-
-    setPoints([])
-    setStartedAt(null)
   }
 
   const totalDistance = useMemo(() => {
@@ -195,7 +250,10 @@ export default function App() {
     return distanceMeters(startPoint, currentPoint)
   }, [startPoint, currentPoint])
 
-  const duration = startedAt ? now - startedAt : 0
+  const duration =
+    tracking && activeStartedAt
+      ? elapsedMs + (now - activeStartedAt)
+      : elapsedMs
 
   const avgSpeed =
     duration > 0 ? totalDistance / 1000 / (duration / 1000 / 3600) : 0
@@ -251,55 +309,123 @@ ${points
   }
 
   async function downloadOfflineMap() {
-    if (!currentPoint) {
-      alert('Сначала нажми Старт, чтобы получить GPS-позицию')
-      return
-    }
-
     setDownloadingMap(true)
-    setDownloadProgress('Подготовка карты...')
+    setDownloadProgress('Подготовка карты Алматы и гор...')
 
     try {
       const cache = await caches.open('osm-map-tiles')
 
-      const zooms = [13, 14, 15, 16]
-      const radius = 3
+      const places = [
+        { name: 'Алматы', lat: 43.238949, lng: 76.889709 },
+        { name: 'Медеу', lat: 43.1578, lng: 77.0588 },
+        { name: 'Шымбулак', lat: 43.128, lng: 77.079 },
+        { name: 'БАО', lat: 43.05, lng: 76.985 },
+      ]
 
-      const urls: string[] = []
+      const zoomConfigs = [
+        { zoom: 11, radius: 3 },
+        { zoom: 12, radius: 5 },
+        { zoom: 13, radius: 7 },
+        { zoom: 14, radius: 9 },
+      ]
 
-      for (const zoom of zooms) {
-        const centerX = lonToTileX(currentPoint.lng, zoom)
-        const centerY = latToTileY(currentPoint.lat, zoom)
+      const urls = new Set<string>()
 
-        for (let x = centerX - radius; x <= centerX + radius; x++) {
-          for (let y = centerY - radius; y <= centerY + radius; y++) {
-            const subdomain = ['a', 'b', 'c'][Math.abs(x + y) % 3]
-            urls.push(`https://${subdomain}.tile.openstreetmap.org/${zoom}/${x}/${y}.png`)
+      for (const place of places) {
+        for (const config of zoomConfigs) {
+          const centerX = lonToTileX(place.lng, config.zoom)
+          const centerY = latToTileY(place.lat, config.zoom)
+
+          for (let x = centerX - config.radius; x <= centerX + config.radius; x++) {
+            for (let y = centerY - config.radius; y <= centerY + config.radius; y++) {
+              const subdomain = ['a', 'b', 'c'][Math.abs(x + y) % 3]
+              urls.add(
+                `https://${subdomain}.tile.openstreetmap.org/${config.zoom}/${x}/${y}.png`
+              )
+            }
           }
         }
       }
 
+      const urlList = Array.from(urls)
       let done = 0
 
-      for (const url of urls) {
+      for (const url of urlList) {
         try {
-          const response = await fetch(url, { mode: 'no-cors' })
-          await cache.put(url, response)
+          const cached = await cache.match(url)
+
+          if (!cached) {
+            const response = await fetch(url, { mode: 'no-cors' })
+            await cache.put(url, response)
+          }
         } catch {
-          // Пропускаем один тайл, если не скачался
+          // пропускаем один тайл
         }
 
         done++
-        setDownloadProgress(`Скачано ${done}/${urls.length}`)
+        setDownloadProgress(`Скачано ${done}/${urlList.length}`)
       }
 
-      setDownloadProgress('Карта района сохранена офлайн')
-      alert('Карта района сохранена. Теперь можно открыть её без интернета.')
+      setDownloadProgress('Алматы и горные зоны сохранены офлайн')
+      alert('Карта Алматы, Медеу, Шымбулак и БАО сохранена офлайн.')
     } catch {
       alert('Не удалось сохранить карту')
     } finally {
       setDownloadingMap(false)
     }
+  }
+
+  async function finishRoute() {
+    if (points.length < 2) {
+      alert('Маршрут слишком короткий')
+      return
+    }
+
+    stopTracking()
+
+    const db = await dbPromise
+
+    const route: SavedRoute = {
+      name: `Поход ${new Date().toLocaleDateString('ru-RU')}`,
+      points,
+      distance: totalDistance,
+      duration,
+      createdAt: Date.now(),
+    }
+
+    await db.add('routes', route)
+    await db.clear('points')
+    await db.clear('session')
+
+    setPoints([])
+    setElapsedMs(0)
+    setActiveStartedAt(null)
+
+    const savedRoutes = await db.getAll('routes')
+    setRoutes(savedRoutes.reverse())
+
+    alert('Поход сохранён в историю')
+  }
+
+  function openRoute(route: SavedRoute) {
+    setPoints(route.points)
+    setElapsedMs(route.duration)
+    setActiveStartedAt(null)
+    setTracking(false)
+    setHistoryOpen(false)
+  }
+
+  async function deleteRoute(routeId?: number) {
+    if (!routeId) return
+
+    const confirmed = confirm('Удалить этот поход из истории?')
+    if (!confirmed) return
+
+    const db = await dbPromise
+    await db.delete('routes', routeId)
+
+    const savedRoutes = await db.getAll('routes')
+    setRoutes(savedRoutes.reverse())
   }
 
   return (
@@ -362,7 +488,14 @@ ${points
                 position={[currentPoint.lat, currentPoint.lng]}
                 icon={currentIcon}
               />
-              <FollowMe point={currentPoint} />
+              <MapController
+                point={currentPoint}
+                follow={followMe}
+                onMove={() => {
+                  setFollowMe(false)
+                  setShowLocateButton(true)
+                }}
+              />
             </>
           )}
 
@@ -385,6 +518,46 @@ ${points
           )}
         </MapContainer>
 
+        {showLocateButton && (
+          <button
+            onClick={() => {
+              setFollowMe(true)
+              setShowLocateButton(false)
+            }}
+            className="
+              absolute
+              right-4
+              top-4
+              z-[999]
+
+              flex
+              items-center
+              gap-2
+
+              rounded-2xl
+              bg-slate-950/90
+
+              px-4
+              py-3
+
+              text-sm
+              font-black
+              text-white
+
+              shadow-2xl
+              backdrop-blur
+
+              transition-all
+              duration-300
+
+              hover:scale-105
+            "
+          >
+            <Icon path={mdiCrosshairsGps} size={1} />
+            Моё место
+          </button>
+        )}
+
         <div
           className={`absolute bottom-0 left-0 right-0 z-[999]
             transition-transform duration-500 ease-out
@@ -395,7 +568,7 @@ ${points
             }
           `}
         >
-          <div className="relative rounded-t-[32px] bg-slate-950 px-4 pb-4 pt-4 backdrop-blur-xl shadow-2xl">
+          <div className="relative rounded-t-[32px] bg-slate-950 px-4 pb-4 pt-10 backdrop-blur-xl shadow-2xl">
 
             <button
               onClick={() => setMenuOpen(!menuOpen)}
@@ -512,15 +685,17 @@ ${points
         {!tracking ? (
           <button
             onClick={startTracking}
-            className="rounded-2xl bg-green-500 px-4 py-4 font-black text-black"
+            className="flex items-center justify-center gap-2 rounded-2xl bg-green-500 px-4 py-4 font-black text-black"
           >
+            <Icon path={mdiPlay} size={1} />
             Старт
           </button>
         ) : (
           <button
             onClick={stopTracking}
-            className="rounded-2xl bg-red-500 px-4 py-4 font-black"
+            className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-4 py-4 font-black"
           >
+            <Icon path={mdiStop} size={1} />
             Стоп
           </button>
         )}
@@ -528,8 +703,9 @@ ${points
         <button
           onClick={exportGpx}
           disabled={points.length < 2}
-          className="rounded-2xl bg-blue-500 px-4 py-4 font-black disabled:opacity-40"
+          className="flex items-center justify-center gap-2 rounded-2xl bg-blue-500 px-4 py-4 font-black disabled:opacity-40"
         >
+          <Icon path={mdiDownload} size={1} />
           GPX
         </button>
 
@@ -539,16 +715,19 @@ ${points
             alert(`До старта: ${formatDistance(distanceToStart)}`)
           }}
           disabled={!startPoint || !currentPoint}
-          className="rounded-2xl bg-orange-500 px-4 py-4 font-black text-black disabled:opacity-40"
+          className="flex items-center justify-center gap-2 rounded-2xl bg-orange-500 px-4 py-4 font-black text-black disabled:opacity-40"
         >
+          <Icon path={mdiNavigationVariant} size={1} />
           К старту
         </button>
 
         <button
-          onClick={clearRoute}
-          className="rounded-2xl bg-slate-700 px-4 py-4 font-black"
+          onClick={finishRoute}
+          disabled={points.length < 2}
+          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-700 px-4 py-4 font-black disabled:opacity-40"
         >
-          Очистить
+          <Icon path={mdiFlag} size={1} />
+          Завершить
         </button>
 
         <button
@@ -557,19 +736,91 @@ ${points
             alert(`${currentPoint.lat.toFixed(6)}, ${currentPoint.lng.toFixed(6)}`)
           }
           disabled={!currentPoint}
-          className="rounded-2xl bg-slate-800 px-4 py-4 font-black disabled:opacity-40"
+          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black disabled:opacity-40"
         >
+          <Icon path={mdiMapMarker} size={1} />
           Координаты
         </button>
 
         <button
           onClick={downloadOfflineMap}
           disabled={!currentPoint || downloadingMap}
-          className="rounded-2xl bg-purple-500 px-4 py-4 font-black disabled:opacity-40"
+          className="flex items-center justify-center gap-2 rounded-2xl bg-purple-500 px-4 py-4 font-black disabled:opacity-40"
         >
-          {downloadingMap ? 'Загрузка...' : 'Карта'}
+          {downloadingMap ? (
+            <>
+              <Icon path={mdiLoading} size={1} />
+              <span>Загрузка...</span>
+            </>
+          ) : (
+            <>
+              <Icon path={mdiMap} size={1} />
+              <span>Скачать карту</span>
+            </>
+          )}
+        </button>
+        <button
+          onClick={() => setHistoryOpen(true)}
+          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black"
+        >
+          <Icon path={mdiHistory} size={1} />
+          История
         </button>
       </footer>
+
+      {historyOpen && (
+        <div className="fixed inset-0 z-[2000] flex items-end bg-black/60 p-3 backdrop-blur-sm">
+          <div className="max-h-[80vh] w-full overflow-y-auto rounded-3xl bg-slate-950 p-4 text-white shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-black">История походов</h2>
+
+              <button
+                onClick={() => setHistoryOpen(false)}
+                className="rounded-full bg-slate-800 px-4 py-2 font-black"
+              >
+                ✕
+              </button>
+            </div>
+
+            {routes.length === 0 ? (
+              <p className="text-sm text-slate-400">Пока нет сохранённых походов</p>
+            ) : (
+              <div className="space-y-2">
+                {routes.map(route => (
+                  <div
+                    key={route.id}
+                    className="rounded-2xl bg-slate-800 p-4"
+                  >
+                    <button
+                      onClick={() => openRoute(route)}
+                      className="w-full text-left"
+                    >
+                      <p className="font-black">{route.name}</p>
+                      <p className="text-sm text-slate-400">
+                        {new Date(route.createdAt).toLocaleString('ru-RU')}
+                      </p>
+
+                      <div className="mt-2 flex gap-3 text-sm">
+                        <span>{formatDistance(route.distance)}</span>
+                        <span>{formatTime(route.duration)}</span>
+                        <span>{route.points.length} точек</span>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => deleteRoute(route.id)}
+                      className="flex items-center gap-2 mt-3 w-full rounded-xl bg-red-500/20 px-4 py-2 text-sm font-black text-red-200"
+                    >
+                      <Icon path={mdiDelete} size={1} className="mr-2" />
+                      Удалить
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
