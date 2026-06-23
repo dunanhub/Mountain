@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  base: '/mountain/',
+  base: '/Mountain/',
   plugins: [
     react(),
     tailwindcss(),
@@ -18,8 +18,8 @@ export default defineConfig({
         theme_color: '#0f172a',
         background_color: '#0f172a',
         display: 'standalone',
-        start_url: '/mountain/',
-        scope: '/mountain/',
+        start_url: '/Mountain/',
+        scope: '/Mountain/',
         icons: []
       }
     })
