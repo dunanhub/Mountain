@@ -15,6 +15,11 @@ import {
   mdiLoading,
   mdiHistory,
   mdiDelete,
+  mdiPencil,
+  mdiWater,
+  mdiCampfire,
+  mdiAlert,
+  mdiNote
 } from '@mdi/js'
 
 type Point = {
@@ -36,7 +41,16 @@ type SavedRoute = {
   createdAt: number
 }
 
-const dbPromise = openDB('mountain-tracker-db', 2, {
+type CustomMarker = {
+  id?: number
+  type: 'water' | 'camp' | 'danger' | 'note'
+  title: string
+  lat: number
+  lng: number
+  createdAt: number
+}
+
+const dbPromise = openDB('mountain-tracker-db', 3, {
   upgrade(db) {
     if (!db.objectStoreNames.contains('points')) {
       db.createObjectStore('points', { keyPath: 'id', autoIncrement: true })
@@ -48,6 +62,10 @@ const dbPromise = openDB('mountain-tracker-db', 2, {
 
     if (!db.objectStoreNames.contains('routes')) {
       db.createObjectStore('routes', { keyPath: 'id', autoIncrement: true })
+    }
+
+    if (!db.objectStoreNames.contains('markers')) {
+      db.createObjectStore('markers', { keyPath: 'id', autoIncrement: true })
     }
   },
 })
@@ -146,10 +164,32 @@ export default function App() {
   const [routeName, setRouteName] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [followMe, setFollowMe] = useState(true)
+  const [returnMode, setReturnMode] = useState(false)
+  const [returnIndex, setReturnIndex] = useState<number | null>(null)
   const [showLocateButton, setShowLocateButton] = useState(false)
+  const [markers, setMarkers] = useState<CustomMarker[]>([])
+  const [markerModalOpen, setMarkerModalOpen] = useState(false)
+  const [markersOpen, setMarkersOpen] = useState(false)
+  const [heading, setHeading] = useState<number | null>(null)
 
   const currentPoint = points.at(-1) ?? null
   const startPoint = points[0] ?? null
+  const targetPoint =
+    returnMode &&
+    returnIndex !== null &&
+    returnIndex > 0
+      ? points[returnIndex - 1]
+      : null
+
+  const targetBearing =
+    currentPoint && targetPoint
+      ? calculateBearing(currentPoint, targetPoint)
+      : null
+
+  const arrowRotation =
+    targetBearing !== null && heading !== null
+      ? targetBearing - heading
+      : targetBearing
 
   useEffect(() => {
     loadSaved()
@@ -160,12 +200,45 @@ export default function App() {
     return () => clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    if (
+      !returnMode ||
+      !currentPoint ||
+      returnIndex === null ||
+      returnIndex <= 0
+    ) {
+      return
+    }
+
+    const target = points[returnIndex - 1]
+
+    const distance = distanceMeters(
+      currentPoint,
+      target,
+    )
+
+    if (distance < 10) {
+      setReturnIndex(prev =>
+        prev !== null && prev > 0
+          ? prev - 1
+          : prev,
+      )
+    }
+  }, [
+    currentPoint,
+    returnMode,
+    returnIndex,
+    points,
+  ])
+
   async function loadSaved() {
     const db = await dbPromise
     const savedPoints = await db.getAll('points')
     const savedElapsed = await db.get('session', 'elapsedMs')
     const savedRoutes = await db.getAll('routes')
-
+    const savedMarkers = await db.getAll('markers')
+    
+    setMarkers(savedMarkers)
     setPoints(savedPoints)
     setRoutes(savedRoutes.reverse())
 
@@ -268,22 +341,42 @@ export default function App() {
   function exportGpx() {
     if (points.length < 2) return
 
-    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Mountain Tracker">
-  <trk>
-    <name>Mountain Route</name>
-    <trkseg>
-${points
-  .map(
-    point => `      <trkpt lat="${point.lat}" lon="${point.lng}">
-        ${point.altitude !== null ? `<ele>${point.altitude}</ele>` : ''}
-        <time>${new Date(point.timestamp).toISOString()}</time>
-      </trkpt>`,
-  )
-  .join('\n')}
-    </trkseg>
-  </trk>
-</gpx>`
+    const waypoints = markers
+      .map(
+        marker => `  <wpt lat="${marker.lat}" lon="${marker.lng}">
+      <name>${marker.title}</name>
+      <time>${new Date(marker.createdAt).toISOString()}</time>
+      <desc>${marker.type}</desc>
+    </wpt>`,
+      )
+      .join('\n')
+
+    const trackPoints = points
+      .map(
+        point => `      <trkpt lat="${point.lat}" lon="${point.lng}">
+          ${
+            point.altitude !== null && point.altitude !== undefined
+              ? `<ele>${point.altitude}</ele>`
+              : ''
+          }
+          <time>${new Date(point.timestamp).toISOString()}</time>
+        </trkpt>`,
+      )
+      .join('\n')
+
+    const gpx =
+      `
+        <?xml version="1.0" encoding="UTF-8"?>
+          <gpx version="1.1" creator="Mountain Tracker">
+            ${waypoints}
+            <trk>
+              <name>Mountain Route</name>
+              <trkseg>
+                ${trackPoints}
+              </trkseg>
+            </trk>
+          </gpx>
+      `
 
     const blob = new Blob([gpx], { type: 'application/gpx+xml' })
     const url = URL.createObjectURL(blob)
@@ -499,6 +592,126 @@ ${points
     setRoutes(savedRoutes.reverse())
   }
 
+  async function renameRoute(route: SavedRoute) {
+    if (!route.id) return
+
+    const newName = prompt('Новое название похода:', route.name)
+
+    if (!newName || !newName.trim()) return
+
+    const db = await dbPromise
+
+    await db.put('routes', {
+      ...route,
+      name: newName.trim(),
+    })
+
+    const savedRoutes = await db.getAll('routes')
+    setRoutes(savedRoutes.reverse())
+  }
+
+  async function addMarker(type: CustomMarker['type']) {
+    if (!currentPoint) {
+      alert('Сначала получите GPS-позицию')
+      return
+    }
+
+    const titles = {
+      water: 'Вода',
+      camp: 'Лагерь',
+      danger: 'Опасность',
+      note: 'Заметка',
+    }
+
+    const marker: CustomMarker = {
+      type,
+      title: titles[type],
+      lat: currentPoint.lat,
+      lng: currentPoint.lng,
+      createdAt: Date.now(),
+    }
+
+    const db = await dbPromise
+    await db.add('markers', marker)
+
+    const savedMarkers = await db.getAll('markers')
+    setMarkers(savedMarkers)
+
+    setMarkerModalOpen(false)
+  }
+
+  async function deleteMarker(markerId?: number) {
+    if (!markerId) return
+
+    const confirmed = confirm('Удалить эту метку?')
+    if (!confirmed) return
+
+    const db = await dbPromise
+    await db.delete('markers', markerId)
+
+    const savedMarkers = await db.getAll('markers')
+    setMarkers(savedMarkers)
+  }
+
+  function findNearestTrackPoint() {
+    if (!currentPoint || points.length < 2) return
+
+    let nearestIndex = 0
+    let nearestDistance = Infinity
+
+    points.forEach((point, index) => {
+      const distance = distanceMeters(currentPoint, point)
+
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearestIndex = index
+      }
+    })
+
+    setReturnIndex(nearestIndex)
+  }
+
+  function startReturnMode() {
+    findNearestTrackPoint()
+    startCompass()
+    setReturnMode(true)
+  }
+
+  function calculateBearing(from: Point, to: Point) {
+    const toRad = (value: number) => (value * Math.PI) / 180
+    const toDeg = (value: number) => (value * 180) / Math.PI
+
+    const lat1 = toRad(from.lat)
+    const lat2 = toRad(to.lat)
+    const dLng = toRad(to.lng - from.lng)
+
+    const y = Math.sin(dLng) * Math.cos(lat2)
+    const x =
+      Math.cos(lat1) * Math.sin(lat2) -
+      Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng)
+
+    return (toDeg(Math.atan2(y, x)) + 360) % 360
+  }
+
+  function startCompass() {
+    window.addEventListener('deviceorientationabsolute', handleOrientation as EventListener)
+    window.addEventListener('deviceorientation', handleOrientation as EventListener)
+  }
+
+  function handleOrientation(event: DeviceOrientationEvent) {
+    const webkitHeading = (event as DeviceOrientationEvent & { webkitCompassHeading?: number })
+      .webkitCompassHeading
+
+    if (typeof webkitHeading === 'number') {
+      setHeading(webkitHeading)
+      return
+    }
+
+    if (typeof event.alpha === 'number') {
+      setHeading(360 - event.alpha)
+    }
+  }
+
   return (
     <div className="flex h-full flex-col bg-slate-950 text-white">
       <header className="z-10 p-4">
@@ -587,6 +800,24 @@ ${points
               dashArray="8"
             />
           )}
+
+          {markers.map(marker => (
+            <Marker
+              key={marker.id}
+              position={[marker.lat, marker.lng]}
+            />
+          ))}
+
+          {targetPoint && currentPoint && (
+            <Polyline
+              positions={[
+                [currentPoint.lat, currentPoint.lng],
+                [targetPoint.lat, targetPoint.lng],
+              ]}
+              weight={6}
+              dashArray="10"
+            />
+          )}
         </MapContainer>
 
         {showLocateButton && (
@@ -625,7 +856,6 @@ ${points
             "
           >
             <Icon path={mdiCrosshairsGps} size={1} />
-            Моё место
           </button>
         )}
 
@@ -747,6 +977,57 @@ ${points
                     : '—'}
                 </p>
               </div>
+
+              {returnMode && targetPoint && currentPoint && (
+                <div className="col-span-2 rounded-2xl bg-green-500 p-3 text-black">
+                  <p className="text-xs font-bold opacity-80">
+                    Возврат по маршруту
+                  </p>
+
+                  <p className="text-2xl font-black">
+                    {formatDistance(
+                      distanceMeters(
+                        currentPoint,
+                        targetPoint,
+                      ),
+                    )}
+                  </p>
+
+                  <p className="text-sm">
+                    До следующей точки маршрута
+                  </p>
+                </div>
+              )}
+
+              {returnMode && targetPoint && currentPoint && (
+                <div className="col-span-2 rounded-2xl bg-green-500 p-4 text-black">
+                  <p className="text-xs font-bold opacity-80">Возврат по маршруту</p>
+
+                  <div className="mt-2 flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-2xl font-black">
+                        {formatDistance(distanceMeters(currentPoint, targetPoint))}
+                      </p>
+                      <p className="text-sm">До следующей точки маршрута</p>
+                    </div>
+
+                    <div
+                      className="flex h-16 w-16 items-center justify-center rounded-full bg-black/10 text-4xl transition-transform duration-300"
+                      style={{
+                        transform: `rotate(${arrowRotation ?? 0}deg)`,
+                      }}
+                    >
+                      ↑
+                    </div>
+                  </div>
+
+                  {heading === null && (
+                    <p className="mt-2 text-xs opacity-80">
+                      Компас может попросить разрешение на телефоне
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -830,12 +1111,36 @@ ${points
             </>
           )}
         </button>
+
         <button
           onClick={() => setHistoryOpen(true)}
           className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black"
         >
           <Icon path={mdiHistory} size={1} />
           История
+        </button>
+
+        <button
+          onClick={() => setMarkersOpen(true)}
+          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black"
+        >
+          <Icon path={mdiMapMarker} size={1} />
+          Метки
+        </button>
+
+        <button
+          onClick={() => {
+            if (!returnMode) {
+              startReturnMode()
+            } else {
+              setReturnMode(false)
+              setReturnIndex(null)
+            }
+          }}
+          disabled={points.length < 2}
+          className="rounded-2xl bg-orange-500 px-4 py-4 font-black text-black disabled:opacity-40"
+        >
+          {returnMode ? 'Отмена' : 'Назад'}
         </button>
       </footer>
 
@@ -878,13 +1183,23 @@ ${points
                       </div>
                     </button>
 
-                    <button
-                      onClick={() => deleteRoute(route.id)}
-                      className="flex items-center gap-2 mt-3 w-full rounded-xl bg-red-500/20 px-4 py-2 text-sm font-black text-red-200"
-                    >
-                      <Icon path={mdiDelete} size={1} className="mr-2" />
-                      Удалить
-                    </button>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => renameRoute(route)}
+                        className="flex items-center gap-2 rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-black text-blue-200"
+                      >
+                        <Icon path={mdiPencil} size={1} className="mr-2" />
+                        Переименовать
+                      </button>
+
+                      <button
+                        onClick={() => deleteRoute(route.id)}
+                        className="flex items-center gap-2 mt-3 w-full rounded-xl bg-red-500/20 px-4 py-2 text-sm font-black text-red-200"
+                      >
+                        <Icon path={mdiDelete} size={1} className="mr-2" />
+                        Удалить
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -936,6 +1251,90 @@ ${points
                 Сохранить
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {markerModalOpen && (
+        <div className="fixed inset-0 z-[2200] flex items-end bg-black/60 p-3 backdrop-blur-sm">
+          <div className="w-full rounded-3xl bg-slate-950 p-4 text-white shadow-2xl">
+            <h2 className="text-xl font-black">Добавить метку</h2>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button onClick={() => addMarker('water')} className="flex items-center gap-2 rounded-2xl bg-blue-500 px-4 py-4 font-black">
+                <Icon path={mdiWater} size={1} className="mr-2" />
+                Вода
+              </button>
+
+              <button onClick={() => addMarker('camp')} className="flex items-center gap-2 rounded-2xl bg-green-500 px-4 py-4 font-black text-black">
+                <Icon path={mdiCampfire} size={1} className="mr-2" />
+                Лагерь
+              </button>
+
+              <button onClick={() => addMarker('danger')} className="flex items-center gap-2 rounded-2xl bg-red-500 px-4 py-4 font-black">
+                <Icon path={mdiAlert} size={1} className="mr-2" />
+                Опасность
+              </button>
+
+              <button onClick={() => addMarker('note')} className="flex items-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black">
+                <Icon path={mdiNote} size={1} className="mr-2" />
+                Заметка
+              </button>
+            </div>
+
+            <button
+              onClick={() => setMarkerModalOpen(false)}
+              className="mt-3 w-full rounded-2xl bg-slate-800 px-4 py-4 font-black"
+            >
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+
+      {markersOpen && (
+        <div className="fixed inset-0 z-[2300] flex items-end bg-black/60 p-3 backdrop-blur-sm">
+          <div className="max-h-[80vh] w-full overflow-y-auto rounded-3xl bg-slate-950 p-4 text-white shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-black">Метки</h2>
+
+              <button
+                onClick={() => setMarkersOpen(false)}
+                className="rounded-full bg-slate-800 px-4 py-2 font-black"
+              >
+                ✕
+              </button>
+            </div>
+
+            {markers.length === 0 ? (
+              <p className="text-sm text-slate-400">Пока нет сохранённых меток</p>
+            ) : (
+              <div className="space-y-2">
+                {markers.map(marker => (
+                  <div
+                    key={marker.id}
+                    className="rounded-2xl bg-slate-800 p-4"
+                  >
+                    <p className="font-black">{marker.title}</p>
+
+                    <p className="text-sm text-slate-400">
+                      {new Date(marker.createdAt).toLocaleString('ru-RU')}
+                    </p>
+
+                    <p className="mt-1 text-xs text-slate-500">
+                      {marker.lat.toFixed(6)}, {marker.lng.toFixed(6)}
+                    </p>
+
+                    <button
+                      onClick={() => deleteMarker(marker.id)}
+                      className="mt-3 w-full rounded-xl bg-red-500/20 px-4 py-2 text-sm font-black text-red-200"
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
