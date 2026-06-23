@@ -16,7 +16,7 @@ import {
   mdiMapMarker,
   mdiNavigationVariant,
   mdiPlay,
-  mdiStop,
+  mdiPause,
   mdiFlag,
   mdiCrosshairsGps,
   mdiMap,
@@ -28,7 +28,8 @@ import {
   mdiCampfire,
   mdiAlert,
   mdiNote,
-  mdiFileExport
+  mdiFileExport,
+  mdiMenu,
 } from '@mdi/js'
 
 type Point = {
@@ -169,12 +170,12 @@ export default function App() {
   const [followMe, setFollowMe] = useState(true)
   const [returnMode, setReturnMode] = useState(false)
   const [returnIndex, setReturnIndex] = useState<number | null>(null)
-  const [showLocateButton, setShowLocateButton] = useState(false)
   const [markers, setMarkers] = useState<CustomMarker[]>([])
   const [markerModalOpen, setMarkerModalOpen] = useState(false)
   const [markersOpen, setMarkersOpen] = useState(false)
   const [heading, setHeading] = useState<number | null>(null)
   const [actionsOpen, setActionsOpen] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [returnTrack, setReturnTrack] = useState<Point[]>([])
 
   const currentPoint = points.at(-1) ?? null
@@ -824,6 +825,8 @@ export default function App() {
           <TileLayer
             attribution="&copy; OpenStreetMap"
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            maxNativeZoom={14}
+            maxZoom={18}
           />
 
           {startPoint && (
@@ -859,7 +862,6 @@ export default function App() {
                 follow={followMe}
                 onMove={() => {
                   setFollowMe(false)
-                  setShowLocateButton(true)
                 }}
               />
             </>
@@ -974,45 +976,6 @@ export default function App() {
               </div>
             </div>
           </div>
-        )}
-
-        {showLocateButton && (
-          <button
-            onClick={() => {
-              setFollowMe(true)
-              setShowLocateButton(false)
-            }}
-            className="
-              absolute
-              right-4
-              top-4
-              z-[999]
-
-              flex
-              items-center
-              gap-2
-
-              rounded-2xl
-              bg-slate-950/90
-
-              px-4
-              py-3
-
-              text-sm
-              font-black
-              text-white
-
-              shadow-2xl
-              backdrop-blur
-
-              transition-all
-              duration-300
-
-              hover:scale-105
-            "
-          >
-            <Icon path={mdiCrosshairsGps} size={1} />
-          </button>
         )}
 
         <div
@@ -1168,59 +1131,42 @@ export default function App() {
         </div>
       </main>
 
+      {/* Моё место — всегда снизу слева */}
+      <button
+        onClick={() => {
+          setFollowMe(true)
+        }}
+        disabled={!currentPoint}
+        className={`fixed bottom-6 z-[1600] flex h-14 w-14 items-center justify-center rounded-full bg-slate-950 text-white shadow-2xl ring-4 ring-white/10 transition-all duration-300 active:scale-90 disabled:opacity-40
+          ${menuOpen ? '-left-30 invisible opacity-0' : 'left-4 visible opacity-100'}`}
+      >
+        <Icon path={mdiCrosshairsGps} size={1.15} />
+      </button>
+
+      {/* Правое главное меню: старт/пауза, метка, назад, SOS, завершить */}
       <div
-        className={`fixed right-3 z-[1600] transition-all duration-500 ease-out ${
-          menuOpen ? 'bottom-[330px]' : 'bottom-6'
+        className={`fixed bottom-6 z-[1600] transition-all duration-500 ease-out ${
+          menuOpen ? '-right-30' : 'right-4'
         }`}
       >
         <div className="relative h-16 w-16">
           {actionsOpen && (
             <>
               <button
-                onClick={startTracking}
-                disabled={tracking}
-                className="absolute bottom-0 right-20 flex h-14 w-14 items-center justify-center rounded-full bg-green-500 text-black shadow-2xl transition-all duration-500"
+                onClick={tracking ? stopTracking : startTracking}
+                className={`absolute bottom-20 right-0 flex h-14 w-14 items-center justify-center rounded-full shadow-2xl transition-all duration-500 active:scale-90 ${
+                  tracking ? 'bg-red-500 text-white' : 'bg-green-500 text-black'
+                }`}
               >
-                <Icon path={mdiPlay} size={1.05} />
-              </button>
-
-              <button
-                onClick={stopTracking}
-                disabled={!tracking}
-                className="absolute bottom-16 right-16 flex h-14 w-14 items-center justify-center rounded-full bg-red-500 text-white shadow-2xl transition-all duration-500"
-              >
-                <Icon path={mdiStop} size={1.05} />
+                <Icon path={tracking ? mdiPause : mdiPlay} size={1.1} />
               </button>
 
               <button
                 onClick={() => setMarkerModalOpen(true)}
                 disabled={!currentPoint}
-                className="absolute bottom-24 right-0 flex h-14 w-14 items-center justify-center rounded-full bg-yellow-500 text-black shadow-2xl transition-all duration-500 disabled:opacity-40"
+                className="absolute bottom-0 right-20 flex h-14 w-14 items-center justify-center rounded-full bg-yellow-500 text-black shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
               >
-                <Icon path={mdiMapMarker} size={1.05} />
-              </button>
-
-              <button
-                onClick={() => setHistoryOpen(true)}
-                className="absolute bottom-20 right-20 flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 text-white shadow-2xl transition-all duration-500"
-              >
-                <Icon path={mdiHistory} size={1.05} />
-              </button>
-
-              <button
-                onClick={downloadOfflineMap}
-                disabled={downloadingMap}
-                className="absolute bottom-32 right-12 flex h-14 w-14 items-center justify-center rounded-full bg-purple-500 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
-              >
-                <Icon path={downloadingMap ? mdiLoading : mdiMap} size={1.05} />
-              </button>
-
-              <button
-                onClick={sendSOS}
-                disabled={!currentPoint}
-                className="absolute bottom-36 right-28 flex h-14 w-14 items-center justify-center rounded-full bg-red-600 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
-              >
-                SOS
+                <Icon path={mdiMapMarker} size={1.1} />
               </button>
 
               <button
@@ -1234,26 +1180,25 @@ export default function App() {
                   }
                 }}
                 disabled={points.length < 2}
-                className="absolute bottom-8 right-32 flex h-14 w-14 items-center justify-center rounded-full bg-orange-500 text-black shadow-2xl transition-all duration-500 disabled:opacity-40"
+                className="absolute bottom-15 right-15 flex h-14 w-14 items-center justify-center rounded-full bg-orange-500 text-black shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
               >
-                <Icon path={mdiNavigationVariant} size={1.05} />
+                <Icon path={mdiNavigationVariant} size={1.1} />
+              </button>
+
+              <button
+                onClick={sendSOS}
+                disabled={!currentPoint}
+                className="absolute bottom-12 right-32 flex h-14 w-14 items-center justify-center rounded-full bg-red-600 text-sm font-black text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
+              >
+                SOS
               </button>
 
               <button
                 onClick={openFinishModal}
                 disabled={points.length < 2}
-                className="absolute bottom-44 right-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-700 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
+                className="absolute bottom-32 right-12 flex h-14 w-14 items-center justify-center rounded-full bg-slate-700 text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
               >
-                <Icon path={mdiFlag} size={1.05} />
-              </button>
-
-              <button
-                onClick={exportGpx}
-                disabled={points.length < 2}
-                className="absolute bottom-52 right-20 flex h-14 w-14 items-center justify-center rounded-full bg-blue-500 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
-              >
-                <Icon path={mdiFileExport} size={1.05} />
-                GPX
+                <Icon path={mdiFlag} size={1.1} />
               </button>
             </>
           )}
@@ -1265,6 +1210,47 @@ export default function App() {
             }`}
           >
             <span className="text-4xl font-light leading-none">+</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Бургер-меню: история, GPX, скачать карту */}
+      <div className={`fixed top-[17%] z-[1600] transition-all duration-500
+        ${menuOpen ? '-right-30' : 'right-4'}
+        `}>
+        <div className="relative h-14 w-14">
+          {toolsOpen && (
+            <>
+              <button
+                onClick={() => setHistoryOpen(true)}
+                className="absolute -bottom-15 -right-2 flex h-13 w-13 items-center justify-center rounded-full bg-slate-900 text-white shadow-2xl transition-all duration-500 active:scale-90"
+              >
+                <Icon path={mdiHistory} size={1.05} />
+              </button>
+
+              <button
+                onClick={exportGpx}
+                disabled={points.length < 2}
+                className="absolute -bottom-12 right-13 flex h-13 w-13 items-center justify-center rounded-full bg-blue-500 text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
+              >
+                <Icon path={mdiFileExport} size={1.05} />
+              </button>
+
+              <button
+                onClick={downloadOfflineMap}
+                disabled={downloadingMap}
+                className="absolute bottom-2 right-17 flex h-13 w-13 items-center justify-center rounded-full bg-purple-500 text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
+              >
+                <Icon path={downloadingMap ? mdiLoading : mdiMap} size={1.05} />
+              </button>
+            </>
+          )}
+
+          <button
+            onClick={() => setToolsOpen(prev => !prev)}
+            className="absolute bottom-0 right-0 flex h-14 w-14 items-center justify-center rounded-full bg-slate-950 text-white shadow-2xl ring-4 ring-white/10 transition-all duration-500 active:scale-90"
+          >
+            <Icon path={mdiMenu} size={1.15} />
           </button>
         </div>
       </div>
