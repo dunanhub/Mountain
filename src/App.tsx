@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMapEvents, MapContainer, Marker, Polyline, TileLayer, useMap } from 'react-leaflet'
+import {
+  useMapEvents,
+  MapContainer,
+  Marker,
+  Polyline,
+  TileLayer,
+  useMap,
+  Circle,
+  CircleMarker,
+} from 'react-leaflet'
 import L from 'leaflet'
 import { openDB } from 'idb'
 import { Icon } from '@mdi/react'
@@ -8,7 +17,6 @@ import {
   mdiNavigationVariant,
   mdiPlay,
   mdiStop,
-  mdiDownload,
   mdiFlag,
   mdiCrosshairsGps,
   mdiMap,
@@ -19,7 +27,8 @@ import {
   mdiWater,
   mdiCampfire,
   mdiAlert,
-  mdiNote
+  mdiNote,
+  mdiFileExport
 } from '@mdi/js'
 
 type Point = {
@@ -32,21 +41,22 @@ type Point = {
   timestamp: number
 }
 
-type SavedRoute = {
-  id?: number
-  name: string
-  points: Point[]
-  distance: number
-  duration: number
-  createdAt: number
-}
-
 type CustomMarker = {
   id?: number
   type: 'water' | 'camp' | 'danger' | 'note'
   title: string
   lat: number
   lng: number
+  createdAt: number
+}
+
+type SavedRoute = {
+  id?: number
+  name: string
+  points: Point[]
+  markers: CustomMarker[]
+  distance: number
+  duration: number
   createdAt: number
 }
 
@@ -68,13 +78,6 @@ const dbPromise = openDB('mountain-tracker-db', 3, {
       db.createObjectStore('markers', { keyPath: 'id', autoIncrement: true })
     }
   },
-})
-
-const currentIcon = new L.Icon({
-  iconUrl: `${import.meta.env.BASE_URL}marker-icon.png`,
-  shadowUrl: `${import.meta.env.BASE_URL}marker-shadow.png`,
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
 })
 
 const startIcon = new L.Icon({
@@ -171,14 +174,18 @@ export default function App() {
   const [markerModalOpen, setMarkerModalOpen] = useState(false)
   const [markersOpen, setMarkersOpen] = useState(false)
   const [heading, setHeading] = useState<number | null>(null)
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const [returnTrack, setReturnTrack] = useState<Point[]>([])
 
   const currentPoint = points.at(-1) ?? null
   const startPoint = points[0] ?? null
+  const activeReturnTrack = returnTrack.length > 0 ? returnTrack : points
+
   const targetPoint =
     returnMode &&
     returnIndex !== null &&
     returnIndex > 0
-      ? points[returnIndex - 1]
+      ? activeReturnTrack[returnIndex - 1]
       : null
 
   const targetBearing =
@@ -190,6 +197,16 @@ export default function App() {
     targetBearing !== null && heading !== null
       ? targetBearing - heading
       : targetBearing
+
+  const returnRemainingPath =
+    returnMode && returnIndex !== null
+      ? activeReturnTrack.slice(0, returnIndex + 1)
+      : []
+
+  const returnPassedPath =
+    returnMode && returnIndex !== null
+      ? activeReturnTrack.slice(returnIndex)
+      : []
 
   useEffect(() => {
     loadSaved()
@@ -549,6 +566,7 @@ export default function App() {
     const route: SavedRoute = {
       name: routeName.trim(),
       points,
+      markers,
       distance: totalDistance,
       duration,
       createdAt: Date.now(),
@@ -557,6 +575,7 @@ export default function App() {
     await db.add('routes', route)
     await db.clear('points')
     await db.clear('session')
+    await db.clear('markers')
 
     setPoints([])
     setElapsedMs(0)
@@ -568,11 +587,14 @@ export default function App() {
     setFinishModalOpen(false)
     setRouteName('')
 
+    setMarkers([])
+
     alert('Поход сохранён в историю')
   }
 
   function openRoute(route: SavedRoute) {
     setPoints(route.points)
+    setMarkers(route.markers ?? [])
     setElapsedMs(route.duration)
     setActiveStartedAt(null)
     setTracking(false)
@@ -653,13 +675,18 @@ export default function App() {
     setMarkers(savedMarkers)
   }
 
-  function findNearestTrackPoint() {
-    if (!currentPoint || points.length < 2) return
+  function startReturnMode() {
+    if (points.length < 2) return
+
+    const snapshot = [...points]
+    setReturnTrack(snapshot)
 
     let nearestIndex = 0
     let nearestDistance = Infinity
 
-    points.forEach((point, index) => {
+    snapshot.forEach((point, index) => {
+      if (!currentPoint) return
+
       const distance = distanceMeters(currentPoint, point)
 
       if (distance < nearestDistance) {
@@ -669,12 +696,9 @@ export default function App() {
     })
 
     setReturnIndex(nearestIndex)
-  }
-
-  function startReturnMode() {
-    findNearestTrackPoint()
     startCompass()
     setReturnMode(true)
+    setMenuOpen(false)
   }
 
   function calculateBearing(from: Point, to: Point) {
@@ -709,6 +733,46 @@ export default function App() {
 
     if (typeof event.alpha === 'number') {
       setHeading(360 - event.alpha)
+    }
+  }
+
+  async function sendSOS() {
+    if (!currentPoint) {
+      alert('GPS ещё не определён')
+      return
+    }
+
+    const message = `
+      🚨 SOS
+
+      Широта: ${currentPoint.lat}
+      Долгота: ${currentPoint.lng}
+
+      Высота: ${
+          currentPoint.altitude !== null &&
+          currentPoint.altitude !== undefined
+            ? Math.round(currentPoint.altitude) + ' м'
+            : 'неизвестно'
+        }
+
+      Точность GPS: ±${Math.round(
+          currentPoint.accuracy,
+        )} м
+
+      Время: ${new Date().toLocaleString('ru-RU')}
+
+      Google Maps:
+      https://maps.google.com/?q=${currentPoint.lat},${currentPoint.lng}
+    `
+
+    try {
+      await navigator.clipboard.writeText(message)
+
+      alert(
+        'SOS сообщение скопировано в буфер обмена',
+      )
+    } catch {
+      alert(message)
     }
   }
 
@@ -768,10 +832,28 @@ export default function App() {
 
           {currentPoint && (
             <>
-              <Marker
-                position={[currentPoint.lat, currentPoint.lng]}
-                icon={currentIcon}
+              <Circle
+                center={[currentPoint.lat, currentPoint.lng]}
+                radius={currentPoint.accuracy}
+                pathOptions={{
+                  color: '#3b82f6',
+                  fillColor: '#3b82f6',
+                  fillOpacity: 0.12,
+                  weight: 1,
+                }}
               />
+
+              <CircleMarker
+                center={[currentPoint.lat, currentPoint.lng]}
+                radius={9}
+                pathOptions={{
+                  color: '#ffffff',
+                  fillColor: '#2563eb',
+                  fillOpacity: 1,
+                  weight: 3,
+                }}
+              />
+
               <MapController
                 point={currentPoint}
                 follow={followMe}
@@ -782,6 +864,57 @@ export default function App() {
               />
             </>
           )}
+
+          {!returnMode && points.length > 1 && (
+            <Polyline
+              positions={points.map(point => [point.lat, point.lng])}
+              weight={5}
+              pathOptions={{
+                color: '#2563eb',
+              }}
+            />
+          )}
+
+          {returnMode && returnPassedPath.length > 1 && (
+            <Polyline
+              positions={returnPassedPath.map(point => [point.lat, point.lng])}
+              weight={5}
+              pathOptions={{
+                color: '#64748b',
+              }}
+            />
+          )}
+
+          {returnMode && returnRemainingPath.length > 1 && (
+            <Polyline
+              positions={returnRemainingPath.map(point => [point.lat, point.lng])}
+              weight={6}
+              pathOptions={{
+                color: '#f97316',
+              }}
+            />
+          )}
+
+          {targetPoint && currentPoint && (
+            <Polyline
+              positions={[
+                [currentPoint.lat, currentPoint.lng],
+                [targetPoint.lat, targetPoint.lng],
+              ]}
+              weight={4}
+              dashArray="10"
+              pathOptions={{
+                color: '#22c55e',
+              }}
+            />
+          )}
+
+          {markers.map(marker => (
+            <Marker
+              key={marker.id}
+              position={[marker.lat, marker.lng]}
+            />
+          ))}
 
           {points.length > 1 && (
             <Polyline
@@ -819,6 +952,29 @@ export default function App() {
             />
           )}
         </MapContainer>
+
+        {returnMode && targetPoint && currentPoint && (
+          <div className="absolute left-3 right-3 top-3 z-[999] rounded-3xl bg-slate-950/95 p-4 text-white shadow-2xl backdrop-blur">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-bold text-orange-300">Назад по маршруту</p>
+                <p className="text-3xl font-black">
+                  {formatDistance(distanceMeters(currentPoint, targetPoint))}
+                </p>
+                <p className="text-xs text-slate-400">До следующей точки</p>
+              </div>
+
+              <div
+                className="flex h-20 w-20 items-center justify-center rounded-full bg-orange-500 text-5xl font-black text-black shadow-xl transition-transform duration-300"
+                style={{
+                  transform: `rotate(${arrowRotation ?? 0}deg)`,
+                }}
+              >
+                ↑
+              </div>
+            </div>
+          </div>
+        )}
 
         {showLocateButton && (
           <button
@@ -860,7 +1016,7 @@ export default function App() {
         )}
 
         <div
-          className={`absolute bottom-0 left-0 right-0 z-[999]
+          className={`absolute bottom-0 left-0 right-0 z-[900]
             transition-transform duration-500 ease-out
             ${
               menuOpen
@@ -979,27 +1135,6 @@ export default function App() {
               </div>
 
               {returnMode && targetPoint && currentPoint && (
-                <div className="col-span-2 rounded-2xl bg-green-500 p-3 text-black">
-                  <p className="text-xs font-bold opacity-80">
-                    Возврат по маршруту
-                  </p>
-
-                  <p className="text-2xl font-black">
-                    {formatDistance(
-                      distanceMeters(
-                        currentPoint,
-                        targetPoint,
-                      ),
-                    )}
-                  </p>
-
-                  <p className="text-sm">
-                    До следующей точки маршрута
-                  </p>
-                </div>
-              )}
-
-              {returnMode && targetPoint && currentPoint && (
                 <div className="col-span-2 rounded-2xl bg-green-500 p-4 text-black">
                   <p className="text-xs font-bold opacity-80">Возврат по маршруту</p>
 
@@ -1033,116 +1168,100 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-5">
-        {!tracking ? (
-          <button
-            onClick={startTracking}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-green-500 px-4 py-4 font-black text-black"
-          >
-            <Icon path={mdiPlay} size={1} />
-            Старт
-          </button>
-        ) : (
-          <button
-            onClick={stopTracking}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-4 py-4 font-black"
-          >
-            <Icon path={mdiStop} size={1} />
-            Стоп
-          </button>
+      <div className="fixed bottom-24 right-3 z-[1500] flex flex-col items-end gap-2">
+        {actionsOpen && (
+          <div className="flex flex-col gap-2">
+            {!tracking ? (
+              <button
+                onClick={startTracking}
+                className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500 text-black shadow-2xl"
+              >
+                <Icon path={mdiPlay} size={1.1} />
+              </button>
+            ) : (
+              <button
+                onClick={stopTracking}
+                className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500 text-white shadow-2xl"
+              >
+                <Icon path={mdiStop} size={1.1} />
+              </button>
+            )}
+
+            <button
+              onClick={() => setMarkerModalOpen(true)}
+              disabled={!currentPoint}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-yellow-500 text-black shadow-2xl disabled:opacity-40"
+            >
+              <Icon path={mdiMapMarker} size={1.1} />
+            </button>
+
+            <button
+              onClick={() => setHistoryOpen(true)}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 text-white shadow-2xl"
+            >
+              <Icon path={mdiHistory} size={1.1} />
+            </button>
+
+            <button
+              onClick={downloadOfflineMap}
+              disabled={downloadingMap}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-purple-500 text-white shadow-2xl disabled:opacity-40"
+            >
+              <Icon path={downloadingMap ? mdiLoading : mdiMap} size={1.1} />
+            </button>
+
+            <button
+              onClick={exportGpx}
+              disabled={points.length < 2}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-500 text-white shadow-2xl disabled:opacity-40"
+            >
+              <Icon path={mdiFileExport} size={1.1} />
+              GPX
+            </button>
+
+            <button
+              onClick={sendSOS}
+              disabled={!currentPoint}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-red-600 text-white shadow-2xl disabled:opacity-40"
+            >
+              SOS
+            </button>
+
+            <button
+              onClick={() => {
+                if (!returnMode) {
+                  startReturnMode()
+                } else {
+                  setReturnMode(false)
+                  setReturnIndex(null)
+                  setReturnTrack([])
+                }
+              }}
+              disabled={points.length < 2}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-orange-500 text-black shadow-2xl disabled:opacity-40"
+            >
+              <Icon path={mdiNavigationVariant} size={1.1} />
+            </button>
+
+            <button
+              onClick={openFinishModal}
+              disabled={points.length < 2}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-700 text-white shadow-2xl disabled:opacity-40"
+            >
+              <Icon path={mdiFlag} size={1.1} />
+            </button>
+          </div>
         )}
 
         <button
-          onClick={exportGpx}
-          disabled={points.length < 2}
-          className="flex items-center justify-center gap-2 rounded-2xl bg-blue-500 px-4 py-4 font-black disabled:opacity-40"
+          onClick={() => setActionsOpen(prev => !prev)}
+          className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-950 text-white shadow-2xl ring-4 ring-white/10"
         >
-          <Icon path={mdiDownload} size={1} />
-          GPX
+          <span className="text-3xl font-black">
+            {actionsOpen ? '×' : '+'}
+          </span>
         </button>
-
-        <button
-          onClick={() => {
-            if (!startPoint || !currentPoint) return
-            alert(`До старта: ${formatDistance(distanceToStart)}`)
-          }}
-          disabled={!startPoint || !currentPoint}
-          className="flex items-center justify-center gap-2 rounded-2xl bg-orange-500 px-4 py-4 font-black text-black disabled:opacity-40"
-        >
-          <Icon path={mdiNavigationVariant} size={1} />
-          К старту
-        </button>
-
-        <button
-          onClick={openFinishModal}
-          disabled={points.length < 2}
-          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-700 px-4 py-4 font-black disabled:opacity-40"
-        >
-          <Icon path={mdiFlag} size={1} />
-          Завершить
-        </button>
-
-        <button
-          onClick={() =>
-            currentPoint &&
-            alert(`${currentPoint.lat.toFixed(6)}, ${currentPoint.lng.toFixed(6)}`)
-          }
-          disabled={!currentPoint}
-          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black disabled:opacity-40"
-        >
-          <Icon path={mdiMapMarker} size={1} />
-          Координаты
-        </button>
-
-        <button
-          onClick={downloadOfflineMap}
-          disabled={!currentPoint || downloadingMap}
-          className="flex items-center justify-center gap-2 rounded-2xl bg-purple-500 px-4 py-4 font-black disabled:opacity-40"
-        >
-          {downloadingMap ? (
-            <>
-              <Icon path={mdiLoading} size={1} />
-              <span>Загрузка...</span>
-            </>
-          ) : (
-            <>
-              <Icon path={mdiMap} size={1} />
-              <span>Скачать карту</span>
-            </>
-          )}
-        </button>
-
-        <button
-          onClick={() => setHistoryOpen(true)}
-          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black"
-        >
-          <Icon path={mdiHistory} size={1} />
-          История
-        </button>
-
-        <button
-          onClick={() => setMarkersOpen(true)}
-          className="flex items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-4 font-black"
-        >
-          <Icon path={mdiMapMarker} size={1} />
-          Метки
-        </button>
-
-        <button
-          onClick={() => {
-            if (!returnMode) {
-              startReturnMode()
-            } else {
-              setReturnMode(false)
-              setReturnIndex(null)
-            }
-          }}
-          disabled={points.length < 2}
-          className="rounded-2xl bg-orange-500 px-4 py-4 font-black text-black disabled:opacity-40"
-        >
-          {returnMode ? 'Отмена' : 'Назад'}
-        </button>
-      </footer>
+      </div>
 
       {historyOpen && (
         <div className="fixed inset-0 z-[2000] flex items-end bg-black/60 p-3 backdrop-blur-sm">
@@ -1179,7 +1298,7 @@ export default function App() {
                       <div className="mt-2 flex gap-3 text-sm">
                         <span>{formatDistance(route.distance)}</span>
                         <span>{formatTime(route.duration)}</span>
-                        <span>{route.points.length} точек</span>
+                        <span>{route.markers?.length ?? 0} меток</span>
                       </div>
                     </button>
 
