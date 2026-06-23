@@ -87,6 +87,8 @@ export default function App() {
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [now, setNow] = useState(Date.now())
   const [error, setError] = useState('')
+  const [downloadingMap, setDownloadingMap] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
 
   const currentPoint = points.at(-1) ?? null
@@ -234,6 +236,72 @@ ${points
     URL.revokeObjectURL(url)
   }
 
+  function lonToTileX(lon: number, zoom: number) {
+    return Math.floor(((lon + 180) / 360) * Math.pow(2, zoom))
+  }
+
+  function latToTileY(lat: number, zoom: number) {
+    const latRad = (lat * Math.PI) / 180
+    return Math.floor(
+      ((1 -
+        Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) /
+        2) *
+        Math.pow(2, zoom),
+    )
+  }
+
+  async function downloadOfflineMap() {
+    if (!currentPoint) {
+      alert('Сначала нажми Старт, чтобы получить GPS-позицию')
+      return
+    }
+
+    setDownloadingMap(true)
+    setDownloadProgress('Подготовка карты...')
+
+    try {
+      const cache = await caches.open('osm-map-tiles')
+
+      const zooms = [13, 14, 15, 16]
+      const radius = 3
+
+      const urls: string[] = []
+
+      for (const zoom of zooms) {
+        const centerX = lonToTileX(currentPoint.lng, zoom)
+        const centerY = latToTileY(currentPoint.lat, zoom)
+
+        for (let x = centerX - radius; x <= centerX + radius; x++) {
+          for (let y = centerY - radius; y <= centerY + radius; y++) {
+            const subdomain = ['a', 'b', 'c'][Math.abs(x + y) % 3]
+            urls.push(`https://${subdomain}.tile.openstreetmap.org/${zoom}/${x}/${y}.png`)
+          }
+        }
+      }
+
+      let done = 0
+
+      for (const url of urls) {
+        try {
+          const response = await fetch(url, { mode: 'no-cors' })
+          await cache.put(url, response)
+        } catch {
+          // Пропускаем один тайл, если не скачался
+        }
+
+        done++
+        setDownloadProgress(`Скачано ${done}/${urls.length}`)
+      }
+
+      setDownloadProgress('Карта района сохранена офлайн')
+      alert('Карта района сохранена. Теперь можно открыть её без интернета.')
+    } catch {
+      alert('Не удалось сохранить карту')
+    } finally {
+      setDownloadingMap(false)
+    }
+  }
+
   return (
     <div className="flex h-full flex-col bg-slate-950 text-white">
       <header className="z-10 p-4">
@@ -258,6 +326,12 @@ ${points
           {error && (
             <div className="mt-3 rounded-2xl bg-red-500/20 p-3 text-sm text-red-200">
               {error}
+            </div>
+          )}
+
+          {downloadProgress && (
+            <div className="mt-3 rounded-2xl bg-purple-500/20 p-3 text-sm text-purple-200">
+              {downloadProgress}
             </div>
           )}
         </div>
@@ -486,6 +560,14 @@ ${points
           className="rounded-2xl bg-slate-800 px-4 py-4 font-black disabled:opacity-40"
         >
           Координаты
+        </button>
+
+        <button
+          onClick={downloadOfflineMap}
+          disabled={!currentPoint || downloadingMap}
+          className="rounded-2xl bg-purple-500 px-4 py-4 font-black disabled:opacity-40"
+        >
+          {downloadingMap ? 'Загрузка...' : 'Карта'}
         </button>
       </footer>
     </div>

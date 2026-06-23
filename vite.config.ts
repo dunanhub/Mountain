@@ -10,11 +10,10 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Mountain',
-        short_name: 'Tracker',
-        description: 'Offline tracker',
+        name: 'Mountain Tracker',
+        short_name: 'Mountain',
+        description: 'Offline GPS tracker',
         theme_color: '#0f172a',
         background_color: '#0f172a',
         display: 'standalone',
@@ -24,15 +23,33 @@ export default defineConfig({
           {
             src: 'icons/icon-192.png',
             sizes: '192x192',
-            type: 'image/png'
+            type: 'image/png',
           },
           {
             src: 'icons/icon-512.png',
             sizes: '512x512',
-            type: 'image/png'
-          }
-        ]
-      }
-    })
-  ]
+            type: 'image/png',
+          },
+        ],
+      },
+      workbox: {
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/[abc]\.tile\.openstreetmap\.org\/.*/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'osm-map-tiles',
+              expiration: {
+                maxEntries: 2500,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+              },
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+            },
+          },
+        ],
+      },
+    }),
+  ],
 })
