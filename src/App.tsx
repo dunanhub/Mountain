@@ -142,6 +142,8 @@ export default function App() {
   const [downloadProgress, setDownloadProgress] = useState('')
   const [routes, setRoutes] = useState<SavedRoute[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [finishModalOpen, setFinishModalOpen] = useState(false)
+  const [routeName, setRouteName] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [followMe, setFollowMe] = useState(true)
   const [showLocateButton, setShowLocateButton] = useState(false)
@@ -375,9 +377,75 @@ ${points
     }
   }
 
-  async function finishRoute() {
+  const KNOWN_LOCATIONS = [
+    {
+      name: 'БАО',
+      lat: 43.0505,
+      lng: 76.9855,
+    },
+    {
+      name: 'Медеу',
+      lat: 43.1578,
+      lng: 77.0588,
+    },
+    {
+      name: 'Шымбулак',
+      lat: 43.1283,
+      lng: 77.0814,
+    },
+    {
+      name: 'Кок-Тобе',
+      lat: 43.2336,
+      lng: 76.9752,
+    },
+  ]
+
+  function getNearestLocation(point: Point) {
+    let nearest = null
+    let nearestDistance = Infinity
+
+    for (const location of KNOWN_LOCATIONS) {
+      const distance = distanceMeters(point, {
+        lat: location.lat,
+        lng: location.lng,
+        accuracy: 0,
+        speed: null,
+        altitude: null,
+        timestamp: 0,
+      })
+
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearest = location
+      }
+    }
+
+    if (nearestDistance < 3000) {
+      return nearest?.name
+    }
+
+    return null
+  }
+
+  function openFinishModal() {
     if (points.length < 2) {
       alert('Маршрут слишком короткий')
+      return
+    }
+
+    const routeStartPoint = points[0]
+
+    const suggestedName =
+      getNearestLocation(routeStartPoint) ??
+      `Поход ${new Date().toLocaleDateString('ru-RU')}`
+
+    setRouteName(suggestedName)
+    setFinishModalOpen(true)
+  }
+
+  async function finishRoute() {
+    if (!routeName.trim()) {
+      alert('Введите название похода')
       return
     }
 
@@ -386,7 +454,7 @@ ${points
     const db = await dbPromise
 
     const route: SavedRoute = {
-      name: `Поход ${new Date().toLocaleDateString('ru-RU')}`,
+      name: routeName.trim(),
       points,
       distance: totalDistance,
       duration,
@@ -403,6 +471,9 @@ ${points
 
     const savedRoutes = await db.getAll('routes')
     setRoutes(savedRoutes.reverse())
+
+    setFinishModalOpen(false)
+    setRouteName('')
 
     alert('Поход сохранён в историю')
   }
@@ -722,7 +793,7 @@ ${points
         </button>
 
         <button
-          onClick={finishRoute}
+          onClick={openFinishModal}
           disabled={points.length < 2}
           className="flex items-center justify-center gap-2 rounded-2xl bg-slate-700 px-4 py-4 font-black disabled:opacity-40"
         >
@@ -818,6 +889,53 @@ ${points
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {finishModalOpen && (
+        <div className="fixed inset-0 z-[2100] flex items-end bg-black/60 p-3 backdrop-blur-sm">
+          <div className="w-full rounded-3xl bg-slate-950 p-4 text-white shadow-2xl">
+            <h2 className="text-xl font-black">Сохранить поход</h2>
+
+            <p className="mt-1 text-sm text-slate-400">
+              Название можно изменить перед сохранением
+            </p>
+
+            <input
+              value={routeName}
+              onChange={e => setRouteName(e.target.value)}
+              className="mt-4 w-full rounded-2xl bg-slate-800 px-4 py-4 text-lg font-black outline-none ring-2 ring-transparent focus:ring-green-500"
+              placeholder="Название похода"
+            />
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className="rounded-2xl bg-slate-800 p-3">
+                <p className="text-xs text-slate-400">Расстояние</p>
+                <p className="text-lg font-black">{formatDistance(totalDistance)}</p>
+              </div>
+
+              <div className="rounded-2xl bg-slate-800 p-3">
+                <p className="text-xs text-slate-400">Время</p>
+                <p className="text-lg font-black">{formatTime(duration)}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setFinishModalOpen(false)}
+                className="rounded-2xl bg-slate-800 px-4 py-4 font-black"
+              >
+                Отмена
+              </button>
+
+              <button
+                onClick={finishRoute}
+                className="rounded-2xl bg-green-500 px-4 py-4 font-black text-black"
+              >
+                Сохранить
+              </button>
+            </div>
           </div>
         </div>
       )}
