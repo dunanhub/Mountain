@@ -1168,99 +1168,105 @@ export default function App() {
         </div>
       </main>
 
-      <div className="fixed bottom-24 right-3 z-[1500] flex flex-col items-end gap-2">
-        {actionsOpen && (
-          <div className="flex flex-col gap-2">
-            {!tracking ? (
+      <div
+        className={`fixed right-3 z-[1600] transition-all duration-500 ease-out ${
+          menuOpen ? 'bottom-[330px]' : 'bottom-6'
+        }`}
+      >
+        <div className="relative h-16 w-16">
+          {actionsOpen && (
+            <>
               <button
                 onClick={startTracking}
-                className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500 text-black shadow-2xl"
+                disabled={tracking}
+                className="absolute bottom-0 right-20 flex h-14 w-14 items-center justify-center rounded-full bg-green-500 text-black shadow-2xl transition-all duration-500"
               >
-                <Icon path={mdiPlay} size={1.1} />
+                <Icon path={mdiPlay} size={1.05} />
               </button>
-            ) : (
+
               <button
                 onClick={stopTracking}
-                className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500 text-white shadow-2xl"
+                disabled={!tracking}
+                className="absolute bottom-16 right-16 flex h-14 w-14 items-center justify-center rounded-full bg-red-500 text-white shadow-2xl transition-all duration-500"
               >
-                <Icon path={mdiStop} size={1.1} />
+                <Icon path={mdiStop} size={1.05} />
               </button>
-            )}
 
-            <button
-              onClick={() => setMarkerModalOpen(true)}
-              disabled={!currentPoint}
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-yellow-500 text-black shadow-2xl disabled:opacity-40"
-            >
-              <Icon path={mdiMapMarker} size={1.1} />
-            </button>
+              <button
+                onClick={() => setMarkerModalOpen(true)}
+                disabled={!currentPoint}
+                className="absolute bottom-24 right-0 flex h-14 w-14 items-center justify-center rounded-full bg-yellow-500 text-black shadow-2xl transition-all duration-500 disabled:opacity-40"
+              >
+                <Icon path={mdiMapMarker} size={1.05} />
+              </button>
 
-            <button
-              onClick={() => setHistoryOpen(true)}
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 text-white shadow-2xl"
-            >
-              <Icon path={mdiHistory} size={1.1} />
-            </button>
+              <button
+                onClick={() => setHistoryOpen(true)}
+                className="absolute bottom-20 right-20 flex h-14 w-14 items-center justify-center rounded-full bg-slate-900 text-white shadow-2xl transition-all duration-500"
+              >
+                <Icon path={mdiHistory} size={1.05} />
+              </button>
 
-            <button
-              onClick={downloadOfflineMap}
-              disabled={downloadingMap}
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-purple-500 text-white shadow-2xl disabled:opacity-40"
-            >
-              <Icon path={downloadingMap ? mdiLoading : mdiMap} size={1.1} />
-            </button>
+              <button
+                onClick={downloadOfflineMap}
+                disabled={downloadingMap}
+                className="absolute bottom-32 right-12 flex h-14 w-14 items-center justify-center rounded-full bg-purple-500 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
+              >
+                <Icon path={downloadingMap ? mdiLoading : mdiMap} size={1.05} />
+              </button>
 
-            <button
-              onClick={exportGpx}
-              disabled={points.length < 2}
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-500 text-white shadow-2xl disabled:opacity-40"
-            >
-              <Icon path={mdiFileExport} size={1.1} />
-              GPX
-            </button>
+              <button
+                onClick={sendSOS}
+                disabled={!currentPoint}
+                className="absolute bottom-36 right-28 flex h-14 w-14 items-center justify-center rounded-full bg-red-600 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
+              >
+                SOS
+              </button>
 
-            <button
-              onClick={sendSOS}
-              disabled={!currentPoint}
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-red-600 text-white shadow-2xl disabled:opacity-40"
-            >
-              SOS
-            </button>
+              <button
+                onClick={() => {
+                  if (!returnMode) {
+                    startReturnMode()
+                  } else {
+                    setReturnMode(false)
+                    setReturnIndex(null)
+                    setReturnTrack([])
+                  }
+                }}
+                disabled={points.length < 2}
+                className="absolute bottom-8 right-32 flex h-14 w-14 items-center justify-center rounded-full bg-orange-500 text-black shadow-2xl transition-all duration-500 disabled:opacity-40"
+              >
+                <Icon path={mdiNavigationVariant} size={1.05} />
+              </button>
 
-            <button
-              onClick={() => {
-                if (!returnMode) {
-                  startReturnMode()
-                } else {
-                  setReturnMode(false)
-                  setReturnIndex(null)
-                  setReturnTrack([])
-                }
-              }}
-              disabled={points.length < 2}
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-orange-500 text-black shadow-2xl disabled:opacity-40"
-            >
-              <Icon path={mdiNavigationVariant} size={1.1} />
-            </button>
+              <button
+                onClick={openFinishModal}
+                disabled={points.length < 2}
+                className="absolute bottom-44 right-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-700 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
+              >
+                <Icon path={mdiFlag} size={1.05} />
+              </button>
 
-            <button
-              onClick={openFinishModal}
-              disabled={points.length < 2}
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-700 text-white shadow-2xl disabled:opacity-40"
-            >
-              <Icon path={mdiFlag} size={1.1} />
-            </button>
-          </div>
-        )}
+              <button
+                onClick={exportGpx}
+                disabled={points.length < 2}
+                className="absolute bottom-52 right-20 flex h-14 w-14 items-center justify-center rounded-full bg-blue-500 text-white shadow-2xl transition-all duration-500 disabled:opacity-40"
+              >
+                <Icon path={mdiFileExport} size={1.05} />
+                GPX
+              </button>
+            </>
+          )}
 
-        <button
-          onClick={() => setActionsOpen(prev => !prev)}
-          className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-950 text-white shadow-2xl ring-4 ring-white/10"
-        >
-          <span className="text-3xl font-black">
-            {actionsOpen ? '×' : '+'}
-          </span>
-        </button>
+          <button
+            onClick={() => setActionsOpen(prev => !prev)}
+            className={`absolute bottom-0 right-0 flex h-16 w-16 items-center justify-center rounded-full bg-slate-950 text-white shadow-2xl ring-4 ring-white/10 transition-all duration-500 active:scale-90 ${
+              actionsOpen ? 'rotate-45' : 'rotate-0'
+            }`}
+          >
+            <span className="text-4xl font-light leading-none">+</span>
+          </button>
+        </div>
       </div>
 
       {historyOpen && (
