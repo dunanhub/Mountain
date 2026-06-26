@@ -10,6 +10,11 @@
     "deploy": "npm run build && gh-pages -d dist"
   },
   "dependencies": {
+    "@capacitor-community/background-geolocation": "^1.2.26",
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/geolocation": "^8.2.0",
     "@mdi/js": "^7.4.47",
     "@mdi/react": "^1.6.1",
     "idb": "^8.0.3",

@@ -32,6 +32,30 @@ import {
   mdiMenu,
 } from '@mdi/js'
 
+import { Capacitor, registerPlugin } from '@capacitor/core'
+import type { BackgroundGeolocationPlugin } from '@capacitor-community/background-geolocation'
+
+const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPlugin>(
+  'BackgroundGeolocation',
+)
+
+type TrackingWidgetPlugin = {
+  start: () => Promise<void>
+  stop: () => Promise<void>
+  saveLastLocation: (data: {
+    lat: number
+    lng: number
+    accuracy: number
+    altitude: number
+  }) => Promise<void>
+  readMarkers: () => Promise<{ markers: CustomMarker[] }>
+  clearMarkers: () => Promise<void>
+  readStopRequested: () => Promise<{ stopRequested: boolean }>
+  clearStopRequested: () => Promise<void>
+}
+
+const TrackingWidget = registerPlugin<TrackingWidgetPlugin>('TrackingWidget')
+
 type Point = {
   id?: number
   lat: number
@@ -61,6 +85,14 @@ type SavedRoute = {
   createdAt: number
 }
 
+type OfflineMapZone = {
+  id: string
+  name: string
+  lat: number
+  lng: number
+  zooms: { zoom: number; radius: number }[]
+}
+
 const dbPromise = openDB('mountain-tracker-db', 3, {
   upgrade(db) {
     if (!db.objectStoreNames.contains('points')) {
@@ -87,6 +119,50 @@ const startIcon = new L.Icon({
   iconSize: [25, 41],
   iconAnchor: [12, 41],
 })
+
+function getMarkerIcon(type: CustomMarker['type']) {
+  const config = {
+    water: {
+      icon: mdiWater,
+      color: '#3b82f6',
+    },
+    camp: {
+      icon: mdiCampfire,
+      color: '#22c55e',
+    },
+    danger: {
+      icon: mdiAlert,
+      color: '#ef4444',
+    },
+    note: {
+      icon: mdiNote,
+      color: '#64748b',
+    },
+  }[type]
+
+  return L.divIcon({
+    className: '',
+    iconSize: [42, 42],
+    iconAnchor: [21, 21],
+    html: `
+      <div style="
+        width: 42px;
+        height: 42px;
+        border-radius: 9999px;
+        background: ${config.color};
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 10px 25px rgba(0,0,0,.35);
+        border: 3px solid white;
+      ">
+        <svg viewBox="0 0 24 24" width="24" height="24">
+          <path fill="white" d="${config.icon}" />
+        </svg>
+      </div>
+    `,
+  })
+}
 
 function MapController({
   point,
@@ -153,6 +229,8 @@ function formatTime(ms: number) {
 
 export default function App() {
   const watchId = useRef<number | null>(null)
+  const backgroundWatchId = useRef<string | null>(null)
+  const gpxInputRef = useRef<HTMLInputElement | null>(null)
 
   const [points, setPoints] = useState<Point[]>([])
   const [tracking, setTracking] = useState(false)
@@ -177,6 +255,14 @@ export default function App() {
   const [actionsOpen, setActionsOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [returnTrack, setReturnTrack] = useState<Point[]>([])
+  const [offlineMapsOpen, setOfflineMapsOpen] = useState(false)
+  const [downloadedZones, setDownloadedZones] = useState<string[]>([])
+
+  const [selectedMarker, setSelectedMarker] = useState<CustomMarker | null>(null)
+  const [selectedPoint, setSelectedPoint] = useState<Point | null>(null)
+  const [selectedTarget, setSelectedTarget] = useState<CustomMarker | Point | null>(null)
+  const [traceTarget, setTraceTarget] = useState<CustomMarker | Point | null>(null)
+  const [traceTargetIndex, setTraceTargetIndex] = useState<number | null>(null)
 
   const currentPoint = points.at(-1) ?? null
   const startPoint = points[0] ?? null
@@ -198,6 +284,43 @@ export default function App() {
     targetBearing !== null && heading !== null
       ? targetBearing - heading
       : targetBearing
+
+  const currentTrackIndex = currentPoint ? findNearestPointIndex(currentPoint) : null
+
+  const traceNextIndex =
+    traceTargetIndex !== null &&
+    currentTrackIndex !== null
+      ? currentTrackIndex > traceTargetIndex
+        ? currentTrackIndex - 1
+        : currentTrackIndex < traceTargetIndex
+          ? currentTrackIndex + 1
+          : traceTargetIndex
+      : null
+
+  const traceNextPoint =
+    traceNextIndex !== null
+      ? points[traceNextIndex]
+      : null
+
+  const activeNavTarget = traceTarget ? traceNextPoint : targetPoint
+
+  const activeNavBearing =
+    currentPoint && activeNavTarget
+      ? calculateBearing(currentPoint, activeNavTarget as Point)
+      : null
+
+  const activeNavRotation =
+    activeNavBearing !== null && heading !== null
+      ? activeNavBearing - heading
+      : activeNavBearing
+
+  const tracePath =
+    traceTargetIndex !== null &&
+    currentTrackIndex !== null
+      ? currentTrackIndex > traceTargetIndex
+        ? points.slice(traceTargetIndex, currentTrackIndex + 1)
+        : points.slice(currentTrackIndex, traceTargetIndex + 1)
+      : []
 
   const returnRemainingPath =
     returnMode && returnIndex !== null
@@ -249,13 +372,47 @@ export default function App() {
     points,
   ])
 
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return
+
+    const timer = setInterval(async () => {
+      const stopResult = await TrackingWidget.readStopRequested()
+
+      if (stopResult.stopRequested) {
+        await TrackingWidget.clearStopRequested()
+        await stopTracking()
+      }
+
+      const result = await TrackingWidget.readMarkers()
+
+      if (result.markers.length > 0) {
+        const db = await dbPromise
+
+        for (const marker of result.markers) {
+          await db.add('markers', marker)
+        }
+
+        const savedMarkers = await db.getAll('markers')
+        setMarkers(savedMarkers)
+
+        await TrackingWidget.clearMarkers()
+      }
+    }, 3000)
+
+    return () => clearInterval(timer)
+  }, [])
+
   async function loadSaved() {
     const db = await dbPromise
     const savedPoints = await db.getAll('points')
     const savedElapsed = await db.get('session', 'elapsedMs')
     const savedRoutes = await db.getAll('routes')
     const savedMarkers = await db.getAll('markers')
+    const savedDownloadedZones = await db.get('session', 'downloadedZones')
     
+    if (savedDownloadedZones?.value) {
+      setDownloadedZones(savedDownloadedZones.value)
+    }
     setMarkers(savedMarkers)
     setPoints(savedPoints)
     setRoutes(savedRoutes.reverse())
@@ -271,51 +428,102 @@ export default function App() {
     const last = points.at(-1)
     if (last) {
       const distance = distanceMeters(last, point)
-      if (distance < 3) return
+      if (distance < 2) return
     }
 
     await db.add('points', point)
     setPoints(prev => [...prev, point])
+
+    if (Capacitor.isNativePlatform()) {
+      await TrackingWidget.saveLastLocation({
+        lat: point.lat,
+        lng: point.lng,
+        accuracy: point.accuracy,
+        altitude: point.altitude ?? 0,
+      })
+    }
   }
 
   async function startTracking() {
     setError('')
 
-    if (!navigator.geolocation) {
-      setError('GPS не поддерживается этим браузером')
+    if (!Capacitor.isNativePlatform()) {
+      if (!navigator.geolocation) {
+        setError('GPS не поддерживается этим браузером')
+        return
+      }
+
+      watchId.current = navigator.geolocation.watchPosition(
+        async position => {
+          await savePoint({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            accuracy: position.coords.accuracy,
+            speed: position.coords.speed,
+            altitude: position.coords.altitude,
+            timestamp: position.timestamp,
+          })
+        },
+        err => setError(err.message),
+        {
+          enableHighAccuracy: true,
+          maximumAge: 0,
+          timeout: 15000,
+        },
+      )
+
+      setActiveStartedAt(Date.now())
+      setTracking(true)
+ 
       return
     }
 
-    setActiveStartedAt(Date.now())
-
-    watchId.current = navigator.geolocation.watchPosition(
-      async position => {
-        await savePoint({
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-          speed: position.coords.speed,
-          altitude: position.coords.altitude,
-          timestamp: position.timestamp,
-        })
-      },
-      err => {
-        setError(err.message)
-      },
+    backgroundWatchId.current = await BackgroundGeolocation.addWatcher(
       {
-        enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 15000,
+        backgroundMessage: 'Mountain Tracker записывает маршрут',
+        backgroundTitle: 'GPS-трекинг запущен',
+        requestPermissions: true,
+        stale: false,
+        distanceFilter: 5,
+      },
+      async (location: any, error: any) => {
+        if (error) {
+          setError(error.message)
+          return
+        }
+
+        if (!location) return
+
+        await savePoint({
+          lat: location.latitude,
+          lng: location.longitude,
+          accuracy: location.accuracy ?? 0,
+          speed: location.speed ?? null,
+          altitude: location.altitude ?? null,
+          timestamp: location.time ?? Date.now(),
+        })
       },
     )
 
+    setActiveStartedAt(Date.now())
     setTracking(true)
+
+    if (Capacitor.isNativePlatform()) {
+      await TrackingWidget.start()
+    }
   }
 
   async function stopTracking() {
     if (watchId.current !== null) {
       navigator.geolocation.clearWatch(watchId.current)
       watchId.current = null
+    }
+
+    if (backgroundWatchId.current !== null) {
+      await BackgroundGeolocation.removeWatcher({
+        id: backgroundWatchId.current,
+      })
+      backgroundWatchId.current = null
     }
 
     if (activeStartedAt) {
@@ -327,7 +535,11 @@ export default function App() {
       const db = await dbPromise
       await db.put('session', { key: 'elapsedMs', value: newElapsed })
     }
-
+    
+    if (Capacitor.isNativePlatform()) {
+      await TrackingWidget.stop()
+    }
+    
     setTracking(false)
   }
 
@@ -421,74 +633,58 @@ export default function App() {
     )
   }
 
-  async function downloadOfflineMap() {
-    setDownloadingMap(true)
-    setDownloadProgress('Подготовка карты Алматы и гор...')
-
-    try {
-      const cache = await caches.open('osm-map-tiles')
-
-      const places = [
-        { name: 'Алматы', lat: 43.238949, lng: 76.889709 },
-        { name: 'Медеу', lat: 43.1578, lng: 77.0588 },
-        { name: 'Шымбулак', lat: 43.128, lng: 77.079 },
-        { name: 'БАО', lat: 43.05, lng: 76.985 },
-      ]
-
-      const zoomConfigs = [
-        { zoom: 11, radius: 3 },
-        { zoom: 12, radius: 5 },
-        { zoom: 13, radius: 7 },
-        { zoom: 14, radius: 9 },
+  const OFFLINE_ZONES: OfflineMapZone[] = [
+    {
+      id: 'almaty',
+      name: 'Алматы',
+      lat: 43.238949,
+      lng: 76.889709,
+      zooms: [
+        { zoom: 11, radius: 4 },
+        { zoom: 12, radius: 6 },
+        { zoom: 13, radius: 8 },
+        { zoom: 14, radius: 10 },
         { zoom: 15, radius: 5 },
         { zoom: 16, radius: 3 },
-      ]
-
-      const urls = new Set<string>()
-
-      for (const place of places) {
-        for (const config of zoomConfigs) {
-          const centerX = lonToTileX(place.lng, config.zoom)
-          const centerY = latToTileY(place.lat, config.zoom)
-
-          for (let x = centerX - config.radius; x <= centerX + config.radius; x++) {
-            for (let y = centerY - config.radius; y <= centerY + config.radius; y++) {
-              const subdomain = ['a', 'b', 'c'][Math.abs(x + y) % 3]
-              urls.add(
-                `https://${subdomain}.tile.openstreetmap.org/${config.zoom}/${x}/${y}.png`
-              )
-            }
-          }
-        }
-      }
-
-      const urlList = Array.from(urls)
-      let done = 0
-
-      for (const url of urlList) {
-        try {
-          const cached = await cache.match(url)
-
-          if (!cached) {
-            const response = await fetch(url, { mode: 'no-cors' })
-            await cache.put(url, response)
-          }
-        } catch {
-          // пропускаем один тайл
-        }
-
-        done++
-        setDownloadProgress(`Скачано ${done}/${urlList.length}`)
-      }
-
-      setDownloadProgress('Алматы и горные зоны сохранены офлайн')
-      alert('Карта Алматы, Медеу, Шымбулак и БАО сохранена офлайн.')
-    } catch {
-      alert('Не удалось сохранить карту')
-    } finally {
-      setDownloadingMap(false)
-    }
-  }
+      ],
+    },
+    {
+      id: 'medeu',
+      name: 'Медеу',
+      lat: 43.1578,
+      lng: 77.0588,
+      zooms: [
+        { zoom: 13, radius: 6 },
+        { zoom: 14, radius: 8 },
+        { zoom: 15, radius: 6 },
+        { zoom: 16, radius: 4 },
+      ],
+    },
+    {
+      id: 'shymbulak',
+      name: 'Шымбулак',
+      lat: 43.1283,
+      lng: 77.0814,
+      zooms: [
+        { zoom: 13, radius: 6 },
+        { zoom: 14, radius: 8 },
+        { zoom: 15, radius: 6 },
+        { zoom: 16, radius: 4 },
+      ],
+    },
+    {
+      id: 'bao',
+      name: 'БАО',
+      lat: 43.0505,
+      lng: 76.9855,
+      zooms: [
+        { zoom: 13, radius: 6 },
+        { zoom: 14, radius: 8 },
+        { zoom: 15, radius: 6 },
+        { zoom: 16, radius: 4 },
+      ],
+    },
+  ]
 
   const KNOWN_LOCATIONS = [
     {
@@ -780,6 +976,150 @@ export default function App() {
     }
   }
 
+  async function downloadOfflineZone(zone: OfflineMapZone) {
+    setDownloadingMap(true)
+    setDownloadProgress(`Подготовка: ${zone.name}`)
+
+    try {
+      const db = await dbPromise
+      const cache = await caches.open('osm-map-tiles')
+      const urls = new Set<string>()
+
+      for (const config of zone.zooms) {
+        const centerX = lonToTileX(zone.lng, config.zoom)
+        const centerY = latToTileY(zone.lat, config.zoom)
+
+        for (let x = centerX - config.radius; x <= centerX + config.radius; x++) {
+          for (let y = centerY - config.radius; y <= centerY + config.radius; y++) {
+            const subdomain = ['a', 'b', 'c'][Math.abs(x + y) % 3]
+            urls.add(`https://${subdomain}.tile.openstreetmap.org/${config.zoom}/${x}/${y}.png`)
+          }
+        }
+      }
+
+      const urlList = Array.from(urls)
+
+      let done = 0
+
+      for (const url of urlList) {
+        try {
+          const cached = await cache.match(url)
+
+          if (!cached) {
+            const response = await fetch(url, { mode: 'no-cors' })
+            await cache.put(url, response)
+          }
+        } catch {
+          // пропускаем тайл
+        }
+
+        done++
+        setDownloadProgress(`${zone.name}: ${done}/${urlList.length}`)
+      }
+
+      const updatedZones = Array.from(new Set([...downloadedZones, zone.id]))
+
+      await db.put('session', {
+        key: 'downloadedZones',
+        value: updatedZones,
+      })
+
+      setDownloadedZones(updatedZones)
+
+      setDownloadProgress(`${zone.name} сохранён офлайн`)
+      alert(`${zone.name} сохранён офлайн`)
+    } finally {
+      setDownloadingMap(false)
+    }
+  }
+
+  function findNearestPointIndex(target: Point | CustomMarker) {
+    if (points.length === 0) return null
+
+    let nearestIndex = 0
+    let nearestDistance = Infinity
+
+    points.forEach((point, index) => {
+      const distance = distanceMeters(point, target as Point)
+
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearestIndex = index
+      }
+    })
+
+    return nearestIndex
+  }
+
+  function startTraceToTarget(target: Point | CustomMarker) {
+    const targetIndex = findNearestPointIndex(target)
+
+    if (targetIndex === null) return
+
+    setTraceTarget(target)
+    setTraceTargetIndex(targetIndex)
+
+    startCompass()
+
+    setSelectedMarker(null)
+    setSelectedPoint(null)
+  }
+
+  async function importGpxFile(file: File) {
+    const text = await file.text()
+    const parser = new DOMParser()
+    const xml = parser.parseFromString(text, 'application/xml')
+
+    const trkpts = Array.from(xml.querySelectorAll('trkpt'))
+
+    if (trkpts.length < 2) {
+      alert('В GPX файле не найден маршрут')
+      return
+    }
+
+    const importedPoints: Point[] = trkpts.map((trkpt, index) => {
+      const lat = Number(trkpt.getAttribute('lat'))
+      const lng = Number(trkpt.getAttribute('lon'))
+
+      const eleText = trkpt.querySelector('ele')?.textContent
+      const timeText = trkpt.querySelector('time')?.textContent
+
+      return {
+        lat,
+        lng,
+        accuracy: 0,
+        speed: null,
+        altitude: eleText ? Number(eleText) : null,
+        timestamp: timeText ? new Date(timeText).getTime() : Date.now() + index,
+      }
+    })
+
+    const routeName =
+      file.name.replace('.gpx', '') || `GPX маршрут ${new Date().toLocaleDateString('ru-RU')}`
+
+    const distance = importedPoints.reduce((sum, point, index) => {
+      if (index === 0) return sum
+      return sum + distanceMeters(importedPoints[index - 1], point)
+    }, 0)
+
+    const route: SavedRoute = {
+      name: routeName,
+      points: importedPoints,
+      markers: [],
+      distance,
+      duration: 0,
+      createdAt: Date.now(),
+    }
+
+    const db = await dbPromise
+    await db.add('routes', route)
+
+    const savedRoutes = await db.getAll('routes')
+    setRoutes(savedRoutes.reverse())
+
+    alert('GPX маршрут добавлен в историю')
+  }
+
   return (
     <div className="flex h-full flex-col bg-slate-950 text-white">
       <header className="z-10 p-4">
@@ -832,10 +1172,112 @@ export default function App() {
             maxZoom={18}
           />
 
+          {/* 1. Основная линия маршрута */}
+          {points.length > 1 && (
+            <Polyline
+              positions={points.map(point => [point.lat, point.lng])}
+              weight={5}
+              pathOptions={{
+                color: '#2563eb',
+              }}
+            />
+          )}
+
+          {returnMode && returnPassedPath.length > 1 && (
+            <Polyline
+              positions={returnPassedPath.map(point => [point.lat, point.lng])}
+              weight={5}
+              pathOptions={{
+                color: '#64748b',
+              }}
+            />
+          )}
+
+          {returnMode && returnRemainingPath.length > 1 && (
+            <Polyline
+              positions={returnRemainingPath.map(point => [point.lat, point.lng])}
+              weight={6}
+              pathOptions={{
+                color: '#f97316',
+              }}
+            />
+          )}
+
+          {/* 2. Линия следования по маршруту */}
+          {traceTarget && tracePath.length > 1 && (
+            <Polyline
+              positions={tracePath.map(point => [point.lat, point.lng])}
+              weight={7}
+              pathOptions={{
+                color: '#22c55e',
+              }}
+            />
+          )}
+
+          {/* 3. Маленькие точки */}
+          {points
+            .filter((_, index) => index % 10 === 0)
+            .map((point, index) => (
+              <div key={`track-point-wrap-${index}`}>
+                <CircleMarker
+                  center={[point.lat, point.lng]}
+                  radius={14}
+                  pathOptions={{
+                    color: 'transparent',
+                    fillColor: '#ffffff',
+                    fillOpacity: 0.01,
+                    weight: 0,
+                  }}
+                  eventHandlers={{
+                    click: () => {
+                      setSelectedPoint(point)
+                      setSelectedMarker(null)
+                      setSelectedTarget(point)
+                    },
+                  }}
+                />
+
+                <CircleMarker
+                  center={[point.lat, point.lng]}
+                  radius={4}
+                  pathOptions={{
+                    color: '#ffffff',
+                    fillColor: '#0ea5e9',
+                    fillOpacity: 1,
+                    weight: 1,
+                  }}
+                  eventHandlers={{
+                    click: () => {
+                      setSelectedPoint(point)
+                      setSelectedMarker(null)
+                      setSelectedTarget(point)
+                    },
+                  }}
+                />
+              </div>
+            ))}
+
+          {/* 4. Метки */}
+          {markers.map(marker => (
+            <Marker
+              key={marker.id}
+              position={[marker.lat, marker.lng]}
+              icon={getMarkerIcon(marker.type)}
+              eventHandlers={{
+                click: () => {
+                  setSelectedMarker(marker)
+                  setSelectedPoint(null)
+                  setSelectedTarget(marker)
+                },
+              }}
+            />
+          ))}
+
           {startPoint && (
             <Marker position={[startPoint.lat, startPoint.lng]} icon={startIcon} />
           )}
 
+          {/* 5. Текущая позиция — последняя, значит поверх всех */}
           {currentPoint && (
             <>
               <Circle
@@ -869,110 +1311,159 @@ export default function App() {
               />
             </>
           )}
-
-          {!returnMode && points.length > 1 && (
-            <Polyline
-              positions={points.map(point => [point.lat, point.lng])}
-              weight={5}
-              pathOptions={{
-                color: '#2563eb',
-              }}
-            />
-          )}
-
-          {returnMode && returnPassedPath.length > 1 && (
-            <Polyline
-              positions={returnPassedPath.map(point => [point.lat, point.lng])}
-              weight={5}
-              pathOptions={{
-                color: '#64748b',
-              }}
-            />
-          )}
-
-          {returnMode && returnRemainingPath.length > 1 && (
-            <Polyline
-              positions={returnRemainingPath.map(point => [point.lat, point.lng])}
-              weight={6}
-              pathOptions={{
-                color: '#f97316',
-              }}
-            />
-          )}
-
-          {targetPoint && currentPoint && (
-            <Polyline
-              positions={[
-                [currentPoint.lat, currentPoint.lng],
-                [targetPoint.lat, targetPoint.lng],
-              ]}
-              weight={4}
-              dashArray="10"
-              pathOptions={{
-                color: '#22c55e',
-              }}
-            />
-          )}
-
-          {markers.map(marker => (
-            <Marker
-              key={marker.id}
-              position={[marker.lat, marker.lng]}
-            />
-          ))}
-
-          {points.length > 1 && (
-            <Polyline
-              positions={points.map(point => [point.lat, point.lng])}
-              weight={5}
-            />
-          )}
-
-          {startPoint && currentPoint && points.length > 1 && (
-            <Polyline
-              positions={[
-                [currentPoint.lat, currentPoint.lng],
-                [startPoint.lat, startPoint.lng],
-              ]}
-              weight={3}
-              dashArray="8"
-            />
-          )}
-
-          {markers.map(marker => (
-            <Marker
-              key={marker.id}
-              position={[marker.lat, marker.lng]}
-            />
-          ))}
-
-          {targetPoint && currentPoint && (
-            <Polyline
-              positions={[
-                [currentPoint.lat, currentPoint.lng],
-                [targetPoint.lat, targetPoint.lng],
-              ]}
-              weight={6}
-              dashArray="10"
-            />
-          )}
         </MapContainer>
 
-        {returnMode && targetPoint && currentPoint && (
+        {(selectedMarker || selectedPoint) && (
+          <div className="absolute bottom-24 left-3 right-3 z-[1700] rounded-3xl bg-slate-950/95 p-4 text-white shadow-2xl backdrop-blur">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold text-slate-400">
+                  {selectedMarker ? 'Метка' : 'Точка маршрута'}
+                </p>
+
+                <h3 className="text-xl font-black">
+                  {selectedMarker?.title ?? 'GPS-точка'}
+                </h3>
+
+                <p className="mt-2 text-sm text-slate-300">
+                  Широта: {(selectedMarker?.lat ?? selectedPoint?.lat)?.toFixed(6)}
+                </p>
+
+                <p className="text-sm text-slate-300">
+                  Долгота: {(selectedMarker?.lng ?? selectedPoint?.lng)?.toFixed(6)}
+                </p>
+
+                {selectedPoint && (
+                  <>
+                    <p className="text-sm text-slate-300">
+                      Точность: ±{Math.round(selectedPoint.accuracy)} м
+                    </p>
+
+                    <p className="text-sm text-slate-300">
+                      Время: {new Date(selectedPoint.timestamp).toLocaleString('ru-RU')}
+                    </p>
+                  </>
+                )}
+
+                {selectedMarker && (
+                  <p className="text-sm text-slate-300">
+                    Время: {new Date(selectedMarker.createdAt).toLocaleString('ru-RU')}
+                  </p>
+                )}
+              </div>
+
+              <button
+                onClick={() => {
+                  setSelectedMarker(null)
+                  setSelectedPoint(null)
+                  setSelectedTarget(null)
+                  setTraceTarget(null)
+                  setTraceTargetIndex(null)
+
+                  if (!returnMode) {
+                    setSelectedTarget(null)
+                  }
+                }}
+                className="rounded-full bg-slate-800 px-4 py-2 font-black"
+              >
+                ✕
+              </button>
+            </div>
+
+            <button
+              onClick={() => {
+                if (!selectedTarget) return
+
+                startTraceToTarget(selectedTarget)
+              }}
+              className="mt-4 w-full rounded-2xl bg-green-500 px-4 py-3 font-black text-black"
+            >
+              Проследить
+            </button>
+          </div>
+        )}
+
+        {/* Бургер-меню сверху справа: история, GPX, скачать карту */}
+        <div className={`absolute top-4 z-[1600] transition-all duration-500
+          ${menuOpen ? '-right-30' : 'right-4'}
+          ${returnMode ? 'invisible opacity-0' : 'visible opacity-100'}
+          `}>
+          <div className="relative h-14 w-14">
+            {toolsOpen && (
+              <>
+                <button
+                  onClick={() => setHistoryOpen(true)}
+                  className="absolute -bottom-15 -right-2 flex h-13 w-13 items-center justify-center rounded-full bg-slate-900 text-white shadow-2xl transition-all duration-500 active:scale-90"
+                >
+                  <Icon path={mdiHistory} size={1.05} />
+                </button>
+
+                <button
+                  onClick={exportGpx}
+                  disabled={points.length < 2}
+                  className="absolute -bottom-12 right-13 flex h-13 w-13 items-center justify-center rounded-full bg-blue-500 text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
+                >
+                  <Icon path={mdiFileExport} size={1.05} />
+                </button>
+
+                <button
+                  onClick={() => setOfflineMapsOpen(true)}
+                  disabled={downloadingMap}
+                  className="absolute bottom-2 right-17 flex h-13 w-13 items-center justify-center rounded-full bg-purple-500 text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
+                >
+                  <Icon path={downloadingMap ? mdiLoading : mdiMap} size={1.05} />
+                </button>
+              </>
+            )}
+
+            <button
+              onClick={() => setToolsOpen(prev => !prev)}
+              className="absolute bottom-0 right-0 flex h-14 w-14 items-center justify-center rounded-full bg-slate-950 text-white shadow-2xl ring-4 ring-white/10 transition-all duration-500 active:scale-90"
+            >
+              <Icon path={mdiMenu} size={1.15} />
+            </button>
+          </div>
+        </div>
+
+        {activeNavTarget && currentPoint && (
           <div className="absolute left-3 right-3 top-3 z-[1700] rounded-3xl bg-slate-950/95 p-4 text-white shadow-2xl backdrop-blur">
             <div className="flex items-center justify-between gap-4">
+              <button
+                onClick={() => {
+                  setTraceTarget(null)
+                  if (!returnMode) {
+                    setSelectedTarget(null)
+                  }
+                }}
+                className="absolute right-3 top-3 rounded-full bg-slate-800 px-3 py-1 text-sm font-black"
+              >
+                ✕
+              </button>
               <div>
-                <p className="text-xs font-bold text-orange-300">Назад по маршруту</p>
-                <p className="text-3xl font-black">
-                  {formatDistance(distanceMeters(currentPoint, targetPoint))}
+                <p className="text-xs font-bold text-orange-300">
+                  {traceTarget ? 'Следую к точке' : 'Назад по маршруту'}
                 </p>
-                <p className="text-xs text-slate-400">До следующей точки</p>
+
+                <p className="text-3xl font-black">
+                  {traceTarget && tracePath.length > 1
+                    ? formatDistance(
+                        tracePath.reduce((sum, point, index) => {
+                          if (index === 0) return sum
+                          return sum + distanceMeters(tracePath[index - 1], point)
+                        }, 0),
+                      )
+                    : formatDistance(distanceMeters(currentPoint, activeNavTarget as Point))}
+                </p>
+
+                <p className="text-xs text-slate-400">
+                  {traceTarget ? 'До выбранной точки' : 'До следующей точки'}
+                </p>
               </div>
 
               <div
                 className="flex h-20 w-20 items-center justify-center rounded-full bg-orange-500 text-5xl font-black text-black shadow-xl transition-transform duration-300"
                 style={{
-                  transform: `rotate(${arrowRotation ?? 0}deg)`,
+                  transform: `rotate(${activeNavRotation ?? 0}deg)`,
                 }}
               >
                 ↑
@@ -1149,7 +1640,7 @@ export default function App() {
       {/* Правое главное меню: старт/пауза, метка, назад, SOS, завершить */}
       <div
         className={`fixed bottom-6 z-[1600] transition-all duration-500 ease-out ${
-          menuOpen ? '-right-30' : 'right-4'
+          menuOpen ? '-right-50 invisible opacity-0' : 'right-4 visible opacity-100'
         }`}
       >
         <div className="relative h-16 w-16">
@@ -1213,48 +1704,6 @@ export default function App() {
             }`}
           >
             <span className="text-4xl font-light leading-none">+</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Бургер-меню: история, GPX, скачать карту */}
-      <div className={`fixed top-[17%] z-[1600] transition-all duration-500
-        ${menuOpen ? '-right-30' : 'right-4'}
-        ${returnMode ? 'invisible opacity-0' : 'visible opacity-100'}
-        `}>
-        <div className="relative h-14 w-14">
-          {toolsOpen && (
-            <>
-              <button
-                onClick={() => setHistoryOpen(true)}
-                className="absolute -bottom-15 -right-2 flex h-13 w-13 items-center justify-center rounded-full bg-slate-900 text-white shadow-2xl transition-all duration-500 active:scale-90"
-              >
-                <Icon path={mdiHistory} size={1.05} />
-              </button>
-
-              <button
-                onClick={exportGpx}
-                disabled={points.length < 2}
-                className="absolute -bottom-12 right-13 flex h-13 w-13 items-center justify-center rounded-full bg-blue-500 text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
-              >
-                <Icon path={mdiFileExport} size={1.05} />
-              </button>
-
-              <button
-                onClick={downloadOfflineMap}
-                disabled={downloadingMap}
-                className="absolute bottom-2 right-17 flex h-13 w-13 items-center justify-center rounded-full bg-purple-500 text-white shadow-2xl transition-all duration-500 active:scale-90 disabled:opacity-40"
-              >
-                <Icon path={downloadingMap ? mdiLoading : mdiMap} size={1.05} />
-              </button>
-            </>
-          )}
-
-          <button
-            onClick={() => setToolsOpen(prev => !prev)}
-            className="absolute bottom-0 right-0 flex h-14 w-14 items-center justify-center rounded-full bg-slate-950 text-white shadow-2xl ring-4 ring-white/10 transition-all duration-500 active:scale-90"
-          >
-            <Icon path={mdiMenu} size={1.15} />
           </button>
         </div>
       </div>
@@ -1453,6 +1902,92 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {offlineMapsOpen && (
+        <div className="fixed inset-0 z-[2400] flex items-end bg-black/60 p-3 backdrop-blur-sm">
+          <div className="max-h-[80vh] w-full overflow-y-auto rounded-3xl bg-slate-950 p-4 text-white shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-black">Офлайн карты</h2>
+
+              <button
+                onClick={() => setOfflineMapsOpen(false)}
+                className="rounded-full bg-slate-800 px-4 py-2 font-black"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="mb-4 text-sm text-slate-400">
+              Скачай нужные зоны заранее, пока есть интернет.
+            </p>
+
+            <button
+              onClick={() => gpxInputRef.current?.click()}
+              className="mb-4 w-full rounded-2xl bg-blue-500 px-4 py-4 font-black text-white"
+            >
+              Загрузить маршрут через GPX
+            </button>
+
+            {downloadProgress && (
+              <div className="mb-4 rounded-2xl bg-purple-500/20 p-3 text-sm text-purple-200">
+                {downloadProgress}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {OFFLINE_ZONES.map(zone => {
+                const isDownloaded = downloadedZones.includes(zone.id)
+
+                return (
+                  <button
+                    key={zone.id}
+                    onClick={() => downloadOfflineZone(zone)}
+                    disabled={downloadingMap}
+                    className="w-full rounded-2xl bg-slate-800 p-4 text-left disabled:opacity-40"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-black">{zone.name}</p>
+
+                        <p className="text-sm text-slate-400">
+                          {isDownloaded
+                            ? 'Карта сохранена офлайн'
+                            : 'Скачать карту для офлайн-режима'}
+                        </p>
+                      </div>
+
+                      <span
+                        className={
+                          isDownloaded
+                            ? 'text-green-400'
+                            : 'text-slate-400'
+                        }
+                      >
+                        {isDownloaded ? '✅' : '⬇️'}
+                      </span>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <input
+        ref={gpxInputRef}
+        type="file"
+        accept=".gpx,application/gpx+xml"
+        className="hidden"
+        onChange={async event => {
+          const file = event.target.files?.[0]
+          if (!file) return
+
+          await importGpxFile(file)
+
+          event.target.value = ''
+        }}
+      />
     </div>
   )
 }
